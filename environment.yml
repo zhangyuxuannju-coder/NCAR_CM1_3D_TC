@@ -1,0 +1,15 @@
+name: cm1-typhoon-diagnostics
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python>=3.9
+  - numpy>=1.20
+  - scipy>=1.7
+  - xarray>=0.20
+  - netcdf4>=1.5
+  - matplotlib>=3.4
+  - pyyaml>=5.4
+  - pip
+  - pip:
+    - opencv-python>=4.5

@@ -1,0 +1,145 @@
+# =============================================================================
+# CM1 Typhoon Diagnostic Toolkit - Default Configuration
+# =============================================================================
+# Copy this file and modify for your environment:
+#   cp config/default.yaml config/my_config.yaml
+# Then run: python scripts/xxx.py --config config/my_config.yaml
+# =============================================================================
+
+# =============================================================================
+# CM1 Typhoon Diagnostic Toolkit - Default Configuration
+# =============================================================================
+# 所有路径均为相对于项目根目录 (refactor/) 的相对路径。
+# 脚本会自动创建不存在的输出目录。
+#
+# 如需自定义：cp config/default.yaml config/my_exp.yaml，修改后使用。
+# =============================================================================
+
+# =============================================================================
+# 文件路径（相对路径基于 refactor/ 目录）
+# =============================================================================
+paths:
+  # --- 输入数据 ---
+  # 建议创建软链接：ln -s ../dataset dataset
+  input_file: "dataset/cm1out.nc"
+
+  # --- 输出目录（自动创建） ---
+  # 方位角平均 + 动量收支
+  budget_output_dir: "output/budget"
+  budget_output_file: "output/budget/typhoon_azimuthal_avg_budget.nc"
+
+  # SE 方程诊断
+  se_output_dir: "output/se_pipeline"
+
+  # 敏感性实验
+  exp_output_dir: "output/experiments"
+
+  # 图片与视频
+  figure_dir: "output/figures"
+  figure_az_avg_dir: "output/figures/az_avg"
+  video_dir: "output/videos"
+
+  # 中心追踪
+  center_track_csv: "output/tracks/center_track.csv"
+  center_track_figure: "output/tracks/center_tracks.png"
+
+  # 径向剖面
+  profile_output: "output/profiles/profile.txt"
+
+# --- Physical Constants ---
+physics:
+  gravity: 9.806           # m/s^2
+  coriolis_f: 5.0e-5       # 1/s, default Coriolis parameter
+
+# --- Grid & Domain ---
+domain:
+  max_r_km: 300.0          # max radius for cylindrical coords
+  dr_km: 2.0               # radial grid spacing
+  max_z_km: 20.0           # max height for analysis
+  enforce_dr_not_finer_than_grid: true
+
+# --- Center Finding ---
+center:
+  method: "min"            # "min", "centroid", or "streamfunction"
+  window: 21               # smoothing window size
+  core_radius_km: 6.0      # core stabilization radius
+  center_time_smooth_window: 11  # time smoothing window for center track
+
+# --- Azimuthal Average & Budget ---
+budget:
+  max_times: null          # null = all times
+  verbose: true
+  grouped_residual: true           # enable grouped residual allocation
+  enable_core_stabilization: false  # enable r=0 axisymmetric constraints
+  subtract_translation_speed: false # subtract storm translation
+  residual_weight_alpha: 1.0
+  residual_weight_eps: 1.0e-8
+
+# --- SE Equation Solver ---
+se_solver:
+  # Time selection
+  mode: "single"           # "single", "evap", or "timeavg"
+
+  # SOR solver
+  sor_max_iter: 60000
+  sor_omega: 1.8
+  sor_tol: 1.0e-14
+  sor_verbose_every: 500
+
+  # Regularization
+  elliptic_margin: 0.0
+  inertia_eps_ratio: 1.0e-3
+  regularization_max_iter: 20
+  baroclinic_scale: 0.4    # NCL-style baroclinic term scaling
+
+  # Boundary
+  theta_floor: 150.0
+  theta_outer_smooth_window: 1
+
+  # Output
+  write_netcdf: true
+  write_ieee: true
+  ieee_prefix: "SE"
+  plot_solution: true
+
+  # Evap cooling mode
+  evap_cooling:
+    enabled: true
+    q0: -2.0e-4            # peak cooling rate (K/s), negative=cooling
+    r_center: 145.0         # ellipse center radius (km)
+    z_center: 15.0          # ellipse center height (km)
+    r_half: 105.0           # radial half-axis (km)
+    z_half: 2.5             # vertical half-axis (km)
+    dipole: false           # true=heating-cooling dipole, false=pure cooling gauss
+    dipole_q_factor: 1.0
+    dipole_sigma_z: 1.5
+
+  # Time average mode
+  time_avg:
+    start_hours: 64.0
+    end_hours: 72.0
+
+# --- Variable Names (candidates for auto-detection) ---
+variables:
+  u_candidates: ["u", "ua", "uinterp"]
+  v_candidates: ["v", "va", "vinterp"]
+  w_candidates: ["w", "wa", "winterp"]
+  prs_candidates: ["prs", "pres", "p"]
+  rho_candidates: ["rho", "rhoa", "dens"]
+  theta_candidates: ["th", "theta", "thpert"]
+  psfc_candidates: ["psfc", "sfcprs", "ps"]
+  q_candidates: ["Q", "q_diab", "qheat", "th_src"]
+  fnu_candidates: ["Fnu", "fric_radial", "mom_src", "radial_drag"]
+  u_budget_prefix: "ub_"
+  v_budget_prefix: "vb_"
+
+# --- Plotting Defaults ---
+plotting:
+  fps: 5
+  xy_limit: null           # null = full domain
+  dpi: 150
+  font_size: 11
+  cmap_pressure: "RdBu_r"
+  cmap_wind: "RdBu_r"
+  cmap_se_solution: "RdBu_r"
+  cmap_se_forcing: "RdBu_r"

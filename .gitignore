@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+
+# Notebook
+.ipynb_checkpoints/
+
+# Output
+output/
+test_output/
+*.npz
+*.ieee
+
+# Data (symlink to external)
+dataset/
+
+# IDE
+.vscode/
+.idea/
+
+# macOS
+.DS_Store
