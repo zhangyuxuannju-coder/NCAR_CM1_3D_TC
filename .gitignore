@@ -21,3 +21,4 @@ dataset/
 
 # macOS
 .DS_Store
+._*
