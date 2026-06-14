@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SE Diagnostic - 72h Results</title>
+<style>
+  body { font-family: -apple-system, sans-serif; max-width: 1400px; margin: 0 auto; padding: 20px; background: #1a1a2e; color: #eee; }
+  h1 { color: #4cc9f0; }
+  img { max-width: 100%; border: 1px solid #333; border-radius: 8px; margin: 10px 0; }
+  .card { background: #16213e; padding: 20px; border-radius: 12px; margin: 20px 0; }
+  h2 { color: #f72585; margin-top: 0; }
+  a { color: #4cc9f0; }
+</style>
+</head>
+<body>
+<h1>🌀 SE 方程诊断 — 72h 结果</h1>
+<p>数据: cm1out_Thompson.nc | 时间: 259200s (72h) | 求解器: SOR</p>
+
+<div class="card">
+<h2>1️⃣ 强迫场 — se_forcing_terms.png</h2>
+<a href="se_forcing_terms.png" target="_blank"><img src="se_forcing_terms.png" alt="SE forcing terms"></a>
+<p>Total forcing / Thermal forcing / Momentum forcing / Q heating (K/s)</p>
+</div>
+
+<div class="card">
+<h2>2️⃣ 解场 — se_solution_fields.png</h2>
+<a href="se_solution_fields.png" target="_blank"><img src="se_solution_fields.png" alt="SE solution fields"></a>
+<p>ψ (流函数) / U_se (径向风) / W_se (垂直风) / Vt (切向风)</p>
+</div>
+</body>
+</html>

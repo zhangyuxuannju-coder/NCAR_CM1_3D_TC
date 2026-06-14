@@ -21,7 +21,7 @@
 paths:
   # --- 输入数据 ---
   # 建议创建软链接：ln -s ../dataset dataset
-  input_file: "dataset/cm1out.nc"
+  input_file: "/data1/home/zhangyx/data/cm1out_Thompson.nc"
 
   # --- 输出目录（自动创建） ---
   # 方位角平均 + 动量收支
