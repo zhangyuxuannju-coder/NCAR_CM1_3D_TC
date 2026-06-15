@@ -121,6 +121,11 @@ end program SEdiag
       do j=0,Ny+1
          P(Nx,j)=P(Nx-1,j)
       enddo
+! --- boundary conditions: top free-slip, bottom rigid-lid
+      do i=1,Nx
+         P(i,0)    = 0.0           ! bottom: psi=0 (rigid lid)
+         P(i,Ny+1) = P(i,Ny)       ! top: dpsi/dz=0 (free-slip) → U_se=0 at top
+      enddo
 
       if (abs(max_res)<limit) exit
 
