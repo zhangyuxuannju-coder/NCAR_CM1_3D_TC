@@ -10,11 +10,52 @@
 ## 项目环境
 
 - **服务器**：Rocky Linux 8.10，`/data1/home/zhangyx/project/TC_dynamic`
+- **硬件**：AMD EPYC 9554 (128核256线程)，566 GB 内存，11TB NVMe，**2× RTX 5090 (32GB 显存/卡，共 64GB)**
 - **Python**：Python 3.12.13，**conda 环境 `cm1_tc`**（激活：`conda activate cm1_tc`）
+- **GPU 库**：PyTorch 2.12.1+cu130（通过 NJU 镜像安装），CUDA 驱动 13.2
 - **CM1 编译**：gfortran + OpenMP
 - **模型配置**：`code/namelist.input`，探空文件 `code/input_sounding`
 - **数据目录**：`dataset/`（不进入 Git）；输入数据：`/data1/home/zhangyx/data/cm1out_Thompson.nc`
 - **输出目录**：`output/`（不进入 Git）
+
+### JupyterLab 远程开发环境
+
+**Mac 浏览器访问**：`http://114.212.48.225:8888`，密码 `tc2025`
+
+JupyterLab 通过 systemd 用户服务实现开机自启，内核为 `Python 3 (cm1_tc + PyTorch CUDA)`，内置 xarray/netCDF4/PyTorch 全套科研工具链。
+
+```bash
+# 服务管理
+systemctl --user status jupyterlab     # 查看状态
+systemctl --user restart jupyterlab    # 重启
+systemctl --user stop jupyterlab       # 停止
+
+# 日志
+tail -f /data1/home/zhangyx/.jupyter/jupyterlab.log
+
+# 修改密码
+conda activate cm1_tc
+jupyter server password
+systemctl --user restart jupyterlab
+```
+
+**关键配置文件**：
+- 服务：`~/.config/systemd/user/jupyterlab.service`
+- Jupyter 配置：`~/.jupyter/jupyter_lab_config.py`
+- 内核定义：`~/.local/share/jupyter/kernels/cm1_tc/kernel.json`
+- conda 激活钩子（修复 GLIBCXX 版本冲突）：`~/miniconda3/envs/cm1_tc/etc/conda/activate.d/env_vars.sh`
+
+**GLIBCXX 问题说明**：系统 libstdc++ 仅到 `GLIBCXX_3.4.25`（Rocky 8 的 GCC 8），而 numpy 2.4 需 `GLIBCXX_3.4.29`。修复方案：conda 环境的 `libstdc++.so.6.0.34` 已包含所需符号，通过 conda 激活钩子和 kernel.json 的 `env.LD_LIBRARY_PATH` 优先加载。
+
+### pip/conda 镜像
+
+```bash
+# NJU pip 镜像（速度快，避免超时）
+pip install <package> -i https://mirror.nju.edu.cn/pypi/web/simple
+
+# conda 镜像已在 ~/.condarc 配置 NJU 源
+conda install <package>
+```
 
 ## 代码规范
 
