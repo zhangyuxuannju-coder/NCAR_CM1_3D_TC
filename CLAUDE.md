@@ -20,7 +20,20 @@
 
 ### JupyterLab 远程开发环境
 
-**Mac 浏览器访问**：`http://114.212.48.225:8888`，密码已在服务器上配置（可通过 `jupyter server password` 修改）
+**Mac 浏览器访问**：`http://localhost:8888`，密码在服务器上配置（可通过 `jupyter server password` 修改）。
+
+> ⚠️ 校园网防火墙会封锁服务器 8888 端口，必须通过 SSH 隧道访问，不能直连公网 IP。
+
+**Mac 端 SSH 配置**（`~/.ssh/config`）：
+
+```
+Host nju-server
+    HostName 114.212.48.225
+    User zhangyx
+    LocalForward 8888 localhost:8888
+```
+
+在 Mac 终端执行 `ssh nju-server` 登录后，端口转发自动生效，浏览器访问 `http://localhost:8888` 即可。SSH 连接断开后 JupyterLab 仍可在下次 SSH 登录时继续使用（服务端持续运行）。
 
 JupyterLab 通过 systemd 用户服务实现开机自启，内核为 `Python 3 (cm1_tc + PyTorch CUDA)`，内置 xarray/netCDF4/PyTorch 全套科研工具链。
 
