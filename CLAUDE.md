@@ -20,7 +20,7 @@
 
 ### JupyterLab 远程开发环境
 
-**Mac 浏览器访问**：`http://114.212.48.225:8888`，密码 `tc2025`
+**Mac 浏览器访问**：`http://114.212.48.225:8888`，密码已在服务器上配置（可通过 `jupyter server password` 修改）
 
 JupyterLab 通过 systemd 用户服务实现开机自启，内核为 `Python 3 (cm1_tc + PyTorch CUDA)`，内置 xarray/netCDF4/PyTorch 全套科研工具链。
 
