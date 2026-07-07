@@ -69,6 +69,86 @@ cp config/default.yaml config/my_exp.yaml
 # 编辑 my_exp.yaml 修改路径和参数
 ```
 
+### 1.4 JupyterLab 远程开发环境
+
+服务器上已配置 JupyterLab + GPU conda 环境，支持远程浏览器访问。
+
+#### Mac 浏览器访问
+
+> ⚠️ 校园网防火墙封锁服务器 8888 端口，必须通过 SSH 隧道访问，不能直连公网 IP。
+
+Mac 端 `~/.ssh/config` 配置：
+
+```
+Host nju-server
+    HostName 114.212.48.225
+    User zhangyx
+    LocalForward 8888 localhost:8888
+```
+
+在 Mac 终端执行 `ssh nju-server` 登录后，端口转发自动生效，浏览器访问 `http://localhost:8888` 即可。
+
+#### Windows 浏览器访问
+
+Windows 10/11 自带 OpenSSH，PowerShell 中执行：
+
+```powershell
+ssh -L 8888:localhost:8888 zhangyx@114.212.48.225
+```
+
+保持窗口不关，浏览器访问 `http://localhost:8888`。
+
+#### 服务端管理
+
+JupyterLab 通过 systemd 用户服务实现开机自启，内核为 `Python 3 (cm1_tc + PyTorch CUDA)`。
+
+```bash
+# 服务管理
+systemctl --user status jupyterlab     # 查看状态
+systemctl --user restart jupyterlab    # 重启
+systemctl --user stop jupyterlab       # 停止
+
+# 日志
+tail -f /data1/home/zhangyx/.jupyter/jupyterlab.log
+
+# 修改密码
+conda activate cm1_tc
+jupyter server password
+systemctl --user restart jupyterlab
+```
+
+#### 关键配置文件
+
+| 文件 | 用途 |
+|:---|:---|
+| `~/.config/systemd/user/jupyterlab.service` | systemd 服务定义 |
+| `~/.jupyter/jupyter_lab_config.py` | JupyterLab 配置（端口 8888、root_dir、密码） |
+| `~/.local/share/jupyter/kernels/cm1_tc/kernel.json` | 内核定义（含 LD_LIBRARY_PATH） |
+| `~/miniconda3/envs/cm1_tc/etc/conda/activate.d/env_vars.sh` | conda 激活钩子 |
+
+#### GLIBCXX 版本问题
+
+系统 libstdc++ 仅到 `GLIBCXX_3.4.25`（Rocky 8 的 GCC 8），而 numpy 2.4 需 `GLIBCXX_3.4.29`。修复方案：
+
+- conda 环境的 `libstdc++.so.6.0.34` 已包含所需符号
+- 通过 conda 激活钩子和 kernel.json 的 `env.LD_LIBRARY_PATH` 优先加载
+
+#### pip/conda 镜像
+
+```bash
+# NJU pip 镜像
+pip install <package> -i https://mirror.nju.edu.cn/pypi/web/simple
+
+# conda 镜像已在 ~/.condarc 配置 NJU 源
+conda install <package>
+```
+
+#### 激活环境
+
+```bash
+conda activate cm1_tc   # Python 3.12 + PyTorch 2.12 + CUDA 13.2 + xarray/netCDF4
+```
+
 ---
 
 ## 2. 项目结构
