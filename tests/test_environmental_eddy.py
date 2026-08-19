@@ -41,6 +41,7 @@ class EnvironmentalEddyTests(unittest.TestCase):
         np.testing.assert_allclose(result["vertical_mass_flux"], 0.0, atol=1.0e-12)
         np.testing.assert_allclose(result["F_lambda_eddy"], 0.0, atol=1.0e-12)
         np.testing.assert_allclose(result["Q_eddy"], 0.0, atol=1.0e-12)
+        np.testing.assert_allclose(result["eddy_kinetic_energy"], 0.0, atol=1.0e-12)
 
     def test_scalar_flux_divergence_respects_cylindrical_r_metric(self):
         r = np.array([1.0, 2.0, 4.0, 8.0])

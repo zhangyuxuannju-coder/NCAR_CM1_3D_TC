@@ -6,11 +6,9 @@ from ._se_pipeline_environmental import run_environmental_pipeline
 from ._se_pipeline_single import PipelineConfig, SourceMaskConfig, _parse_csv_names
 
 
-def run_from_args(args) -> None:
+def config_from_args(args) -> PipelineConfig:
     """Translate the unified CLI namespace into a single-case base config."""
-    if not args.jet_input_file:
-        raise ValueError("--mode env requires --jet-input-file")
-    cfg = PipelineConfig(
+    return PipelineConfig(
         input_file=args.input_file,
         output_dir=args.output_dir,
         time_index=args.time_index,
@@ -56,10 +54,16 @@ def run_from_args(args) -> None:
         source_mask=SourceMaskConfig(),
         eddy_average=args.eddy_average,
     )
+
+
+def run_from_args(args) -> None:
+    """Run the fixed-CTRL environmental-eddy SE response."""
+    if not args.jet_input_file:
+        raise ValueError("--mode env requires --jet-input-file")
+    cfg = config_from_args(args)
     run_environmental_pipeline(
         cfg,
         jet_input_file=args.jet_input_file,
         averaging=args.eddy_average,
         bui_baroclinic_scale=args.bui_baroclinic_scale,
     )
-

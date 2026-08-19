@@ -621,3 +621,7 @@ CM1 显式源项；`hadv`/`vadv` 仅用于闭合检查，不与直接 eddy flux 
 完整公式、命令、输出变量和解释见
 [`ENVIRONMENTAL_EDDY_SE.md`](ENVIRONMENTAL_EDDY_SE.md)。
 
+在正式求解前，建议先运行 `--mode stability`，绘制 CTRL/JET 未正则化的
+`I2_raw`、`D_raw`，并检查它们与 `F_lambda_env`、上层出流和急流位置的重合。
+命令、分类含义和输出说明见 [`SE_APPLICABILITY.md`](SE_APPLICABILITY.md)。
+

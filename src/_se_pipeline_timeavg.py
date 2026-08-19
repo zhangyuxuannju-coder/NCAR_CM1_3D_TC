@@ -745,6 +745,7 @@ def azimuthal_average_from_3d(cfg: PipelineConfig) -> Dict[str, np.ndarray]:
         "ur", "ut", "w", "prs", "rho", "theta", "Q", "Fnu",
         "F_lambda_eddy", "F_lambda_eddy_radial", "F_lambda_eddy_vertical",
         "eddy_radial_mass_flux", "eddy_vertical_mass_flux",
+        "eddy_kinetic_energy",
         "F_lambda_diffusion", "F_lambda_other_model", "F_lambda_eddy_budget",
         "F_lambda_eddy_closure_residual", "Q_dtheta_dt", "Q_eddy", "Q_eddy_adv",
         "Q_eddy_radial", "Q_eddy_vertical", "Q_diffusion", "Q_diabatic",

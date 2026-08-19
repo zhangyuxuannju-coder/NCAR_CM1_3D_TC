@@ -238,11 +238,23 @@ def diagnose_eddy_momentum_forcing(
         flux_z_mass = _bin_mean(
             rho * w_prime * ut_prime, bin_index_1d, valid_mask_1d, nr
         )
+        eddy_kinetic_energy = 0.5 * _bin_mean(
+            rho * (ur_prime**2 + ut_prime**2 + w_prime**2),
+            bin_index_1d,
+            valid_mask_1d,
+            nr,
+        ) / rho_safe
     else:
         uv_cov = _bin_mean(ur_prime * ut_prime, bin_index_1d, valid_mask_1d, nr)
         wv_cov = _bin_mean(w_prime * ut_prime, bin_index_1d, valid_mask_1d, nr)
         flux_r_mass = rho_bar * uv_cov
         flux_z_mass = rho_bar * wv_cov
+        eddy_kinetic_energy = 0.5 * _bin_mean(
+            ur_prime**2 + ut_prime**2 + w_prime**2,
+            bin_index_1d,
+            valid_mask_1d,
+            nr,
+        )
 
     divergence = eddy_flux_divergence(
         rho_bar, flux_r_mass, flux_z_mass, r_m, z_m
@@ -255,6 +267,7 @@ def diagnose_eddy_momentum_forcing(
         "w_mean": w_mean,
         "radial_mass_flux": flux_r_mass,
         "vertical_mass_flux": flux_z_mass,
+        "eddy_kinetic_energy": eddy_kinetic_energy,
         "F_lambda_eddy": divergence["forcing"],
         "F_lambda_eddy_radial": divergence["forcing_radial"],
         "F_lambda_eddy_vertical": divergence["forcing_vertical"],

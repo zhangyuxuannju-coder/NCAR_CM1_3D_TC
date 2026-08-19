@@ -76,6 +76,7 @@ class PipelineConfig:
     q_constant: float = 0.0
     fnu_constant: float = 0.0
     eddy_average: str = "reynolds"
+    include_model_budget_terms: bool = True
 
     max_r_km: float = 300.0
     dr_km: float = 2.0
@@ -557,11 +558,12 @@ def azimuthal_average_from_3d(cfg: PipelineConfig) -> Dict[str, np.ndarray]:
         # directly diagnosed eddy flux convergence.
         thermal_terms: Dict[str, np.ndarray] = {}
         thermal_terms_used: List[str] = []
-        for suffix in (
+        thermal_suffixes = (
             "hidiff", "vidiff", "hediff", "vediff", "hturb", "vturb",
             "mp", "rad", "div", "diss", "pbl", "rdamp", "nudge",
             "lsw", "frc", "efall",
-        ):
+        ) if getattr(cfg, "include_model_budget_terms", True) else ()
+        for suffix in thermal_suffixes:
             name = f"ptb_{suffix}"
             if name in ds.variables:
                 thermal_terms[suffix] = _azimuthal_average_by_radius(
@@ -573,11 +575,12 @@ def azimuthal_average_from_3d(cfg: PipelineConfig) -> Dict[str, np.ndarray]:
         # CM1 hadv/vadv are retained only for an independent closure check.
         tangential_terms: Dict[str, np.ndarray] = {}
         budget_pairs_used: List[str] = []
-        for suffix in (
+        momentum_suffixes = (
             "hadv", "vadv", "pgrad", "cor", "hidiff", "vidiff",
             "hediff", "vediff", "hturb", "vturb", "pbl", "rdamp",
             "lsw", "frc",
-        ):
+        ) if getattr(cfg, "include_model_budget_terms", True) else ()
+        for suffix in momentum_suffixes:
             ub_name = f"ub_{suffix}"
             vb_name = f"vb_{suffix}"
             if ub_name in ds.variables and vb_name in ds.variables:
@@ -593,11 +596,15 @@ def azimuthal_average_from_3d(cfg: PipelineConfig) -> Dict[str, np.ndarray]:
             thermal_terms,
             tangential_terms,
         )
-        if thermal_terms_used:
+        if not getattr(cfg, "include_model_budget_terms", True):
+            print("[INFO] CM1 model budget loading intentionally skipped for this diagnostic.")
+        elif thermal_terms_used:
             print(f"[INFO] CM1 theta budget terms used in Q: {', '.join(thermal_terms_used)}")
         else:
             print("[WARN] No CM1 non-advective ptb_* budget terms found; Q contains Q_eddy only.")
-        if budget_pairs_used:
+        if not getattr(cfg, "include_model_budget_terms", True):
+            pass
+        elif budget_pairs_used:
             print(f"[INFO] CM1 momentum budget pairs found: {', '.join(budget_pairs_used)}")
         else:
             print("[WARN] No CM1 ub_*/vb_* budget pairs found; F_lambda contains direct eddy forcing only.")
@@ -665,6 +672,7 @@ def azimuthal_average_from_3d(cfg: PipelineConfig) -> Dict[str, np.ndarray]:
             "F_lambda_eddy_vertical": np.nan_to_num(eddy_diag["F_lambda_eddy_vertical"]),
             "eddy_radial_mass_flux": np.nan_to_num(eddy_diag["radial_mass_flux"]),
             "eddy_vertical_mass_flux": np.nan_to_num(eddy_diag["vertical_mass_flux"]),
+            "eddy_kinetic_energy": np.nan_to_num(eddy_diag["eddy_kinetic_energy"]),
             "F_lambda_diffusion": np.nan_to_num(forcing_parts["F_lambda_diffusion"]),
             "F_lambda_other_model": np.nan_to_num(forcing_parts["F_lambda_other_model"]),
             "F_lambda_eddy_budget": np.nan_to_num(f_eddy_budget),
@@ -1580,6 +1588,7 @@ def run_pipeline(cfg: PipelineConfig) -> None:
         Q_diabatic=avg.get("Q_diabatic", np.zeros_like(q_mod)),
         Q_other_model=avg.get("Q_other_model", np.zeros_like(q_mod)),
         F_lambda_eddy=avg.get("F_lambda_eddy", np.zeros_like(fnu_mod)),
+        eddy_kinetic_energy=avg.get("eddy_kinetic_energy", np.zeros_like(fnu_mod)),
         F_lambda_diffusion=avg.get("F_lambda_diffusion", np.zeros_like(fnu_mod)),
         F_lambda_other_model=avg.get("F_lambda_other_model", np.zeros_like(fnu_mod)),
         F_lambda_eddy_budget=avg.get("F_lambda_eddy_budget", np.zeros_like(fnu_mod)),
@@ -1636,6 +1645,7 @@ def run_pipeline(cfg: PipelineConfig) -> None:
                 "Q_diabatic": (("zh", "radius"), avg.get("Q_diabatic", np.zeros_like(q_mod))),
                 "Q_other_model": (("zh", "radius"), avg.get("Q_other_model", np.zeros_like(q_mod))),
                 "F_lambda_eddy": (("zh", "radius"), avg.get("F_lambda_eddy", np.zeros_like(fnu_mod))),
+                "eddy_kinetic_energy": (("zh", "radius"), avg.get("eddy_kinetic_energy", np.zeros_like(fnu_mod))),
                 "F_lambda_diffusion": (("zh", "radius"), avg.get("F_lambda_diffusion", np.zeros_like(fnu_mod))),
                 "F_lambda_other_model": (("zh", "radius"), avg.get("F_lambda_other_model", np.zeros_like(fnu_mod))),
                 "F_lambda_eddy_budget": (("zh", "radius"), avg.get("F_lambda_eddy_budget", np.zeros_like(fnu_mod))),
