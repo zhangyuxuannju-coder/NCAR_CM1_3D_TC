@@ -22,10 +22,12 @@ import struct
 
 try:
     from .center_finder import find_smoothed_min_point
+    from .environmental_eddy import diagnose_eddy_momentum_forcing
 
     HAS_CENTER_FINDER = True
 except Exception:
     HAS_CENTER_FINDER = False
+    from src.environmental_eddy import diagnose_eddy_momentum_forcing
 
 
 G = 9.806
@@ -71,6 +73,7 @@ class PipelineConfig:
     fnu_override_file: str = ""
     q_constant: float = 0.0
     fnu_constant: float = 0.0
+    eddy_average: str = "favre"
 
     max_r_km: float = 300.0
     dr_km: float = 2.0
@@ -529,6 +532,23 @@ def azimuthal_average_from_3d(cfg: PipelineConfig) -> Dict[str, np.ndarray]:
         rho_avg = _azimuthal_average_by_radius(rho, bin_index, valid_mask, nr)
         theta_avg = _azimuthal_average_by_radius(theta, bin_index, valid_mask, nr)
 
+        # Direct eddy angular-momentum-flux convergence. This stays separate
+        # from the legacy budget-residual Fnu so a JET-CTRL difference does
+        # not fold PBL, diffusion or damping tendencies into the eddy term.
+        r_m = r_centers * 1000.0
+        eddy_diag = diagnose_eddy_momentum_forcing(
+            ur_3d=ur_3d,
+            ut_3d=ut_3d,
+            w_3d=w,
+            rho_3d=rho,
+            bin_index_1d=bin_index,
+            valid_mask_1d=valid_mask,
+            nr=nr,
+            r_m=r_m,
+            z_m=z_m,
+            averaging=cfg.eddy_average,
+        )
+
         # 该项仅用于动量预算中的涡旋曲率项诊断。
         ur_mean_3d = _expand_azimuthal_mean_to_xy(ur_avg, bin_index, valid_mask, len(yh), len(xh))
         ut_mean_3d = _expand_azimuthal_mean_to_xy(ut_avg, bin_index, valid_mask, len(yh), len(xh))
@@ -564,7 +584,6 @@ def azimuthal_average_from_3d(cfg: PipelineConfig) -> Dict[str, np.ndarray]:
                 budget_pairs_used.append(f"{ub_name}+{vb_name}")
 
         fnu_var = cfg.fnu_name if cfg.fnu_name in ds.variables else _first_existing_var(ds, cfg.fnu_candidates)
-        r_m = r_centers * 1000.0
         r_safe = np.maximum(r_m, 0.5 * np.min(np.diff(r_m)) if len(r_m) > 1 else 1.0)
 
         V_mzeta = np.zeros_like(ut_avg)
@@ -637,6 +656,12 @@ def azimuthal_average_from_3d(cfg: PipelineConfig) -> Dict[str, np.ndarray]:
             "theta": theta_avg,
             "Q": q_avg,
             "Fnu": fnu_avg,
+            "F_lambda_eddy": np.nan_to_num(eddy_diag["F_lambda_eddy"]),
+            "F_lambda_eddy_radial": np.nan_to_num(eddy_diag["F_lambda_eddy_radial"]),
+            "F_lambda_eddy_vertical": np.nan_to_num(eddy_diag["F_lambda_eddy_vertical"]),
+            "eddy_radial_mass_flux": np.nan_to_num(eddy_diag["radial_mass_flux"]),
+            "eddy_vertical_mass_flux": np.nan_to_num(eddy_diag["vertical_mass_flux"]),
+            "eddy_average_used": eddy_diag["averaging"],
             "Q_dtheta_dt": dtheta_dt_avg,
             "Q_eddy_adv": eddy_th_adv_avg,
             "V_mzeta": V_mzeta,

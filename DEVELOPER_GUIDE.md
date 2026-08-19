@@ -333,3 +333,17 @@ python scripts/plot_singlepage_diagnostics.py --panel combo --combo-terms "1.0,U
 # 水平风场图
 python scripts/plot_horizontal_field.py --var prs --zh 0 --time 48 --xy-limit 200
 ```
+
+---
+
+## 10. 环境涡动 SE 路径
+
+`scripts/run_se_pipeline.py --mode env` 调用：
+
+1. `src/environmental_eddy.py`：Favre/Reynolds 涡动通量与散度；
+2. `src/se_bui.py`：物理原式的 Bui general SE 基本态、算子和强迫；
+3. `src/_se_pipeline_environmental.py`：JET–CTRL 差值、固定 CTRL 算子求解和输出；
+4. `src/environmental_cli.py`：统一 CLI 到环境管线的参数适配。
+
+旧 `_se_pipeline_single/evap/timeavg.py` 保留 NCL 兼容行为。新的环境路径不得
+加入 15 km 指数海绵；如需改变 `--bui-baroclinic-scale`，必须作为敏感性实验记录。

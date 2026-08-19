@@ -42,12 +42,16 @@ def build_parser() -> argparse.ArgumentParser:
 """)
 
     # ===== 模式 =====
-    p.add_argument("--mode", choices=["single","evap","timeavg"], default="single",
+    p.add_argument("--mode", choices=["single","evap","timeavg","env"], default="single",
                    help="运行模式 (默认 single)")
 
     # ===== 路径 =====
     p.add_argument("--input-file", default="dataset/cm1out.nc", help="输入 NC 文件")
     p.add_argument("--output-dir", default="output/se_pipeline", help="输出目录")
+    p.add_argument("--jet-input-file", default="",
+                   help="env mode JET experiment NC file; --input-file is CTRL")
+    p.add_argument("--eddy-average", choices=["favre", "reynolds"], default="favre",
+                   help="azimuthal eddy decomposition; favre is recommended for CM1")
 
     # ===== 时间 =====
     p.add_argument("--time-index", type=int, default=0)
@@ -84,6 +88,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--sor-verbose-every", type=int, default=500)
     p.add_argument("--baroclinic-scale", type=float, default=0.4,
                    help="NCL式斜压项缩放因子 (0.4 以增强椭圆性)")
+    p.add_argument("--bui-baroclinic-scale", type=float, default=1.0,
+                   help="Bui baroclinic coefficient for env mode (physical value: 1.0)")
 
     # ===== 源项 =====
     p.add_argument("--q-override-file", default="", help="外部热力源二维场 (.npy/.npz/.nc)")
@@ -287,6 +293,11 @@ def _run_timeavg(args):
     run_pipeline(cfg)
 
 
+def _run_env(args):
+    from src.environmental_cli import run_from_args
+    run_from_args(args)
+
+
 def main() -> None:
     args = build_parser().parse_args()
     print(f"[INFO] SE Pipeline mode={args.mode}, input={args.input_file}, output={args.output_dir}")
@@ -297,6 +308,8 @@ def main() -> None:
         _run_evap(args)
     elif args.mode == "timeavg":
         _run_timeavg(args)
+    elif args.mode == "env":
+        _run_env(args)
     else:
         raise ValueError(f"Unknown mode: {args.mode}")
 

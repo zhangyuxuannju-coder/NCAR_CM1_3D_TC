@@ -604,3 +604,15 @@ python scripts/make_video.py \
 | `convert_to_pptx.py` | 保留在原位 | 独立文档工具 |
 
 所有原始文件保持不动，可继续独立使用。
+
+---
+
+## 13. JET–CTRL 环境涡动 SE 诊断
+
+新增 `--mode env`，直接从 CTRL/JET 三维风场计算 Favre 涡动角动量通量
+辐合，构造 `F_lambda_env = F_eddy(JET) - F_eddy(CTRL)`，并使用固定 CTRL
+的 Bui general SE operator 求解直接环境强迫响应。
+
+完整公式、命令、输出变量和解释见
+[`ENVIRONMENTAL_EDDY_SE.md`](ENVIRONMENTAL_EDDY_SE.md)。
+
