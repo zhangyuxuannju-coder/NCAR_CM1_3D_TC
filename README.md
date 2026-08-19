@@ -287,7 +287,7 @@ python scripts/run_budget_diagnostic.py \
 ```bash
 python scripts/run_se_pipeline.py \
     --mode single \
-    --input dataset/cm1out.nc \
+    --input-file dataset/cm1out.nc \
     --target-time-hours 48 \
     --output-dir output/se_pipeline/single_48h \
     --sor-omega 1.8
@@ -300,7 +300,7 @@ python scripts/run_se_pipeline.py \
 ```bash
 python scripts/run_se_pipeline.py \
     --mode evap \
-    --input dataset/cm1out.nc \
+    --input-file dataset/cm1out.nc \
     --target-time-hours 72 \
     --output-dir output/se_pipeline/evap_72h \
     --evap-q0 -2e-4 \
@@ -316,7 +316,7 @@ python scripts/run_se_pipeline.py \
 ```bash
 python scripts/run_se_pipeline.py \
     --mode timeavg \
-    --input dataset/cm1out.nc \
+    --input-file dataset/cm1out.nc \
     --time-avg-start-hours 64 --time-avg-end-hours 72 \
     --output-dir output/se_pipeline/avg_64_72h \
     --sor-omega 1.5
@@ -609,9 +609,14 @@ python scripts/make_video.py \
 
 ## 13. JET–CTRL 环境涡动 SE 诊断
 
-新增 `--mode env`，直接从 CTRL/JET 三维风场计算 Favre 涡动角动量通量
+新增 `--mode env`，直接从 CTRL/JET 三维风场计算 Reynolds 涡动角动量通量
 辐合，构造 `F_lambda_env = F_eddy(JET) - F_eddy(CTRL)`，并使用固定 CTRL
 的 Bui general SE operator 求解直接环境强迫响应。
+
+所有 SE 模式现在都从原始三维 CM1 场先做 TC 中心柱坐标分解，再形成二维
+方位平均基本态和强迫。总 `Q`/`Fnu` 包含 eddy、扩散/PBL、非绝热及其他
+CM1 显式源项；`hadv`/`vadv` 仅用于闭合检查，不与直接 eddy flux convergence
+重复相加。各分量保存在 `se_pipeline_products.npz/.nc` 中。
 
 完整公式、命令、输出变量和解释见
 [`ENVIRONMENTAL_EDDY_SE.md`](ENVIRONMENTAL_EDDY_SE.md)。

@@ -195,7 +195,8 @@ refactor/
 ```
 输入: 方位角平均场 (ut, theta, rho, Q, Fnu)
 步骤:
-  1. azimuthal_average_from_3d() — 从 CM1 输出计算方位角平均场 + Q/Fnu
+  1. azimuthal_average_from_3d() — 从 CM1 原始三维输出计算 Reynolds 方位平均基本态
+     + eddy heat/momentum flux convergence + CM1 非平流 budget 源项，组装 Q/Fnu
   2. invert_theta_from_thermal_wind() — 热成风平衡位温反演
   3. build_se_diagnostic_fields() — 构建 chi, C, ct, xi, zeta, inertial_stability
   4. regularize_inertial_stability_for_ellipticity() — 海绵层正则化确保椭圆性
@@ -340,10 +341,12 @@ python scripts/plot_horizontal_field.py --var prs --zh 0 --time 48 --xy-limit 20
 
 `scripts/run_se_pipeline.py --mode env` 调用：
 
-1. `src/environmental_eddy.py`：Favre/Reynolds 涡动通量与散度；
-2. `src/se_bui.py`：物理原式的 Bui general SE 基本态、算子和强迫；
-3. `src/_se_pipeline_environmental.py`：JET–CTRL 差值、固定 CTRL 算子求解和输出；
-4. `src/environmental_cli.py`：统一 CLI 到环境管线的参数适配。
+1. `src/environmental_eddy.py`：Reynolds（默认）/Favre 涡动热量与动量通量散度；
+2. `src/bui_forcing.py`：组装 Bui 的总 `Q`/`F_lambda`，并用 CM1 hadv/vadv 做独立闭合检查；
+3. `src/se_bui.py`：物理原式的 Bui general SE 基本态、算子和强迫；
+4. `src/_se_pipeline_environmental.py`：JET–CTRL 差值、固定 CTRL 算子求解和输出；
+5. `src/environmental_cli.py`：统一 CLI 到环境管线的参数适配。
 
-旧 `_se_pipeline_single/evap/timeavg.py` 保留 NCL 兼容行为。新的环境路径不得
-加入 15 km 指数海绵；如需改变 `--bui-baroclinic-scale`，必须作为敏感性实验记录。
+`single`、`evap` 和 `timeavg` 共用修正后的 Bui 强迫预处理；其中 timeavg
+先逐时次诊断非线性 eddy covariance 再平均。环境路径不得加入 15 km 指数
+海绵；如需改变 `--bui-baroclinic-scale`，必须作为敏感性实验记录。

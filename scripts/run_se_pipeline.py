@@ -50,8 +50,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--output-dir", default="output/se_pipeline", help="输出目录")
     p.add_argument("--jet-input-file", default="",
                    help="env mode JET experiment NC file; --input-file is CTRL")
-    p.add_argument("--eddy-average", choices=["favre", "reynolds"], default="favre",
-                   help="azimuthal eddy decomposition; favre is recommended for CM1")
+    p.add_argument("--eddy-average", choices=["reynolds", "favre"], default="reynolds",
+                   help="eddy decomposition: reynolds matches Bui; favre is a mass-weighted extension")
 
     # ===== 时间 =====
     p.add_argument("--time-index", type=int, default=0)
@@ -189,6 +189,7 @@ def _run_single(args):
         q_override_file=args.q_override_file,
         fnu_override_file=args.fnu_override_file,
         q_constant=args.q_constant, fnu_constant=args.fnu_constant,
+        eddy_average=args.eddy_average,
         source_mask=mask_cfg,
     )
     run_pipeline(cfg)
@@ -235,6 +236,7 @@ def _run_evap(args):
         q_override_file=args.q_override_file,
         fnu_override_file=args.fnu_override_file,
         q_constant=args.q_constant, fnu_constant=args.fnu_constant,
+        eddy_average=args.eddy_average,
         source_mask=mask_cfg,
         evap_cooling_q0=args.evap_q0, evap_r_center=args.evap_r_center,
         evap_z_center=args.evap_z_center, evap_r_half=args.evap_r_half,
@@ -288,6 +290,7 @@ def _run_timeavg(args):
         q_override_file=args.q_override_file,
         fnu_override_file=args.fnu_override_file,
         q_constant=args.q_constant, fnu_constant=args.fnu_constant,
+        eddy_average=args.eddy_average,
         source_mask=mask_cfg,
     )
     run_pipeline(cfg)

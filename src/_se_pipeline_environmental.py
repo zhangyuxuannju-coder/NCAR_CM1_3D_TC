@@ -117,10 +117,41 @@ def _plot_environmental_response(
     plt.close(fig)
 
 
+def _plot_environmental_forcing_components(
+    out_file: Path,
+    r_km: np.ndarray,
+    z_km: np.ndarray,
+    total: np.ndarray,
+    radial: np.ndarray,
+    vertical: np.ndarray,
+) -> None:
+    """Plot the requested JET-CTRL environmental eddy forcing by itself."""
+    rr, zz = np.meshgrid(r_km, z_km)
+    finite = np.concatenate(
+        [np.asarray(field)[np.isfinite(field)] for field in (total, radial, vertical)]
+    )
+    vmax = float(np.nanpercentile(np.abs(finite), 99.0)) if finite.size else 1.0
+    vmax = max(vmax, 1.0e-20)
+    levels = np.linspace(-vmax, vmax, 25)
+    fig, axes = plt.subplots(1, 3, figsize=(16, 5), constrained_layout=True, sharey=True)
+    for ax, field, title in zip(
+        axes,
+        (total, radial, vertical),
+        (r"$F_{\lambda,env}$", r"$F_{\lambda,env}^{(r)}$", r"$F_{\lambda,env}^{(z)}$"),
+    ):
+        im = ax.contourf(rr, zz, field, levels=levels, cmap="RdBu_r", extend="both")
+        ax.set_title(title + r" (m s$^{-2}$)")
+        ax.set_xlabel("Radius (km)")
+        ax.set_ylabel("Height (km)")
+        fig.colorbar(im, ax=ax, pad=0.02)
+    fig.savefig(out_file, dpi=180)
+    plt.close(fig)
+
+
 def run_environmental_pipeline(
     ctrl_cfg: PipelineConfig,
     jet_input_file: str,
-    averaging: str = "favre",
+    averaging: str = "reynolds",
     bui_baroclinic_scale: float = 1.0,
 ) -> None:
     """Solve the fixed-CTRL response to ``F_eddy(JET)-F_eddy(CTRL)``.
@@ -255,6 +286,14 @@ def run_environmental_pipeline(
         ds.to_netcdf(out_dir / "se_environmental_eddy_products.nc")
 
     if ctrl_cfg.plot_solution:
+        _plot_environmental_forcing_components(
+            out_dir / "environmental_eddy_forcing.png",
+            r_km,
+            z_km,
+            f_env,
+            f_env_radial,
+            f_env_vertical,
+        )
         _plot_environmental_response(
             out_dir / "se_environmental_eddy_response.png",
             r_km,
@@ -270,12 +309,18 @@ def run_environmental_pipeline(
     summary = {
         "ctrl_input": ctrl_cfg.input_file,
         "jet_input": jet_input_file,
+        "environmental_forcing_png": str((out_dir / "environmental_eddy_forcing.png").as_posix()) if ctrl_cfg.plot_solution else "",
         "eddy_average": averaging,
         "F_lambda_env_definition": "JET direct eddy flux convergence minus CTRL",
         "operator_definition": "CTRL fixed operator",
         "bui_baroclinic_scale": float(bui_baroclinic_scale),
         "thermal_wind": tw_info,
         "regularization": reg_info,
+        "eddy_momentum_closure": {
+            "ctrl_rms_m_s2": float(np.sqrt(np.nanmean(ctrl["F_lambda_eddy_closure_residual"] ** 2))),
+            "jet_rms_m_s2": float(np.sqrt(np.nanmean(jet["F_lambda_eddy_closure_residual"] ** 2))),
+            "definition": "budget reconstruction minus direct 3-D flux convergence",
+        },
         "ctrl_center_km": [
             float(ctrl["center_x_km"][0]),
             float(ctrl["center_y_km"][0]),

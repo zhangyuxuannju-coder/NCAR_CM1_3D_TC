@@ -5,6 +5,7 @@ import numpy as np
 from src.environmental_eddy import (
     diagnose_eddy_momentum_forcing,
     eddy_flux_divergence,
+    eddy_scalar_flux_divergence,
     environmental_difference,
 )
 
@@ -31,12 +32,26 @@ class EnvironmentalEddyTests(unittest.TestCase):
         ut = np.broadcast_to(np.array([10.0, 10.0, 20.0, 20.0]), shape).copy()
         w = np.zeros(shape)
         rho = np.ones(shape)
+        theta = np.broadcast_to(np.array([300.0, 300.0, 305.0, 305.0]), shape).copy()
         result = diagnose_eddy_momentum_forcing(
-            ur, ut, w, rho, bins, valid, 2, r, z, averaging="favre"
+            ur, ut, w, rho, bins, valid, 2, r, z,
+            averaging="reynolds", theta_3d=theta,
         )
         np.testing.assert_allclose(result["radial_mass_flux"], 0.0, atol=1.0e-12)
         np.testing.assert_allclose(result["vertical_mass_flux"], 0.0, atol=1.0e-12)
         np.testing.assert_allclose(result["F_lambda_eddy"], 0.0, atol=1.0e-12)
+        np.testing.assert_allclose(result["Q_eddy"], 0.0, atol=1.0e-12)
+
+    def test_scalar_flux_divergence_respects_cylindrical_r_metric(self):
+        r = np.array([1.0, 2.0, 4.0, 8.0])
+        z = np.array([0.0, 1.0, 2.0])
+        rho = np.ones((z.size, r.size))
+        radial_heat_flux = np.broadcast_to(3.0 / r[None, :], rho.shape)
+        vertical_heat_flux = np.full_like(rho, 5.0)
+        result = eddy_scalar_flux_divergence(
+            rho, radial_heat_flux, vertical_heat_flux, r, z
+        )
+        np.testing.assert_allclose(result["forcing"], 0.0, atol=1.0e-12)
 
     def test_environmental_definition_is_jet_minus_ctrl(self):
         jet = np.array([[3.0, 5.0]])
@@ -48,4 +63,3 @@ class EnvironmentalEddyTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

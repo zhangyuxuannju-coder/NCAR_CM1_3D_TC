@@ -22,11 +22,13 @@ import struct
 
 try:
     from .center_finder import find_smoothed_min_point
+    from .bui_forcing import assemble_bui_forcings, reconstruct_eddy_from_advection
     from .environmental_eddy import diagnose_eddy_momentum_forcing
 
     HAS_CENTER_FINDER = True
 except Exception:
     HAS_CENTER_FINDER = False
+    from src.bui_forcing import assemble_bui_forcings, reconstruct_eddy_from_advection
     from src.environmental_eddy import diagnose_eddy_momentum_forcing
 
 
@@ -73,7 +75,7 @@ class PipelineConfig:
     fnu_override_file: str = ""
     q_constant: float = 0.0
     fnu_constant: float = 0.0
-    eddy_average: str = "favre"
+    eddy_average: str = "reynolds"
 
     max_r_km: float = 300.0
     dr_km: float = 2.0
@@ -547,33 +549,35 @@ def azimuthal_average_from_3d(cfg: PipelineConfig) -> Dict[str, np.ndarray]:
             r_m=r_m,
             z_m=z_m,
             averaging=cfg.eddy_average,
+            theta_3d=theta,
         )
 
-        # 该项仅用于动量预算中的涡旋曲率项诊断。
-        ur_mean_3d = _expand_azimuthal_mean_to_xy(ur_avg, bin_index, valid_mask, len(yh), len(xh))
-        ut_mean_3d = _expand_azimuthal_mean_to_xy(ut_avg, bin_index, valid_mask, len(yh), len(xh))
-        ur_prime = ur_3d - ur_mean_3d
-        ut_prime = ut_3d - ut_mean_3d
+        # Bui Eq. (17): total non-advective theta tendencies plus eddy heat
+        # transport.  CM1 hadv/vadv are excluded to avoid double-counting the
+        # directly diagnosed eddy flux convergence.
+        thermal_terms: Dict[str, np.ndarray] = {}
+        thermal_terms_used: List[str] = []
+        for suffix in (
+            "hidiff", "vidiff", "hediff", "vediff", "hturb", "vturb",
+            "mp", "rad", "div", "diss", "pbl", "rdamp", "nudge",
+            "lsw", "frc", "efall",
+        ):
+            name = f"ptb_{suffix}"
+            if name in ds.variables:
+                thermal_terms[suffix] = _azimuthal_average_by_radius(
+                    load_3d(name), bin_index, valid_mask, nr
+                )
+                thermal_terms_used.append(name)
 
-        # 1) 热力源Q直接取变量ptb_mp: 先去交错到标量网格，再做方位角平均。
-        ptb_var_name = "ptb_mp"
-        if ptb_var_name not in ds.variables:
-            raise KeyError(
-                "未找到热力源变量 ptb_mp。"
-                "请确认 dataset/cm1out.nc 中包含该变量，"
-                "或按需修改代码中的 ptb_var_name。"
-            )
-        ptb_3d = load_3d(ptb_var_name)
-        q_avg = _azimuthal_average_by_radius(ptb_3d, bin_index, valid_mask, nr)
-        q_used = "ptb_mp_azimuthal_mean"
-        dtheta_dt_avg = np.zeros_like(q_avg)
-        eddy_th_adv_avg = np.zeros_like(q_avg)
-
-        # 2) 动量源Fnu按切向预算诊断（与notebook一致）：
-        # V_ezeta = V_eh - vcurv_eddy, Fnu = -V_ezeta - V_ev + V_dh + V_dv + tramp
+        # Bui Eq. (16): direct eddy forcing plus PBL/diffusion/model sources.
+        # CM1 hadv/vadv are retained only for an independent closure check.
         tangential_terms: Dict[str, np.ndarray] = {}
         budget_pairs_used: List[str] = []
-        for suffix in ("hadv", "vadv", "pgrad", "cor", "hidiff", "hturb", "vidiff", "vturb", "rdamp"):
+        for suffix in (
+            "hadv", "vadv", "pgrad", "cor", "hidiff", "vidiff",
+            "hediff", "vediff", "hturb", "vturb", "pbl", "rdamp",
+            "lsw", "frc",
+        ):
             ub_name = f"ub_{suffix}"
             vb_name = f"vb_{suffix}"
             if ub_name in ds.variables and vb_name in ds.variables:
@@ -583,8 +587,26 @@ def azimuthal_average_from_3d(cfg: PipelineConfig) -> Dict[str, np.ndarray]:
                 tangential_terms[suffix] = _azimuthal_average_by_radius(t_term, bin_index, valid_mask, nr)
                 budget_pairs_used.append(f"{ub_name}+{vb_name}")
 
-        fnu_var = cfg.fnu_name if cfg.fnu_name in ds.variables else _first_existing_var(ds, cfg.fnu_candidates)
-        r_safe = np.maximum(r_m, 0.5 * np.min(np.diff(r_m)) if len(r_m) > 1 else 1.0)
+        forcing_parts = assemble_bui_forcings(
+            eddy_diag["Q_eddy"],
+            eddy_diag["F_lambda_eddy"],
+            thermal_terms,
+            tangential_terms,
+        )
+        if thermal_terms_used:
+            print(f"[INFO] CM1 theta budget terms used in Q: {', '.join(thermal_terms_used)}")
+        else:
+            print("[WARN] No CM1 non-advective ptb_* budget terms found; Q contains Q_eddy only.")
+        if budget_pairs_used:
+            print(f"[INFO] CM1 momentum budget pairs found: {', '.join(budget_pairs_used)}")
+        else:
+            print("[WARN] No CM1 ub_*/vb_* budget pairs found; F_lambda contains direct eddy forcing only.")
+        q_avg = forcing_parts["Q_total"]
+        fnu_avg = forcing_parts["F_lambda_total"]
+        q_used = "Bui_Q_total: Q_eddy + available non-advective CM1 ptb_* tendencies"
+        fnu_used = "Bui_F_lambda_total: direct eddy + available CM1 PBL/diffusion/model tendencies"
+        dtheta_dt_avg = np.zeros_like(q_avg)
+        eddy_th_adv_avg = forcing_parts["Q_eddy"]
 
         V_mzeta = np.zeros_like(ut_avg)
         V_ezeta = np.zeros_like(ut_avg)
@@ -592,45 +614,27 @@ def azimuthal_average_from_3d(cfg: PipelineConfig) -> Dict[str, np.ndarray]:
         V_dh = np.zeros_like(ut_avg)
         V_dv = np.zeros_like(ut_avg)
         tramp = np.zeros_like(ut_avg)
+        f_eddy_budget = np.zeros_like(ut_avg)
+        f_eddy_closure = np.zeros_like(ut_avg)
 
         if "hadv" in tangential_terms and "vadv" in tangential_terms:
-            thadv = tangential_terms.get("hadv", np.zeros_like(ut_avg))
-            tvadv = tangential_terms.get("vadv", np.zeros_like(ut_avg))
-            thidiff = tangential_terms.get("hidiff", np.zeros_like(ut_avg))
-            thturb = tangential_terms.get("hturb", np.zeros_like(ut_avg))
-            tvidiff = tangential_terms.get("vidiff", np.zeros_like(ut_avg))
-            tvturb = tangential_terms.get("vturb", np.zeros_like(ut_avg))
-            trdamp = tangential_terms.get("rdamp", np.zeros_like(ut_avg))
-
-            dut_dr = _safe_gradient(ut_avg, r_m, axis=1)
-            dut_dz = _safe_gradient(ut_avg, z_m, axis=0)
-
-            vcurv_mean = (ur_avg * ut_avg) / r_safe[None, :]
-            urut_prime_avg = _azimuthal_average_by_radius(ur_prime * ut_prime, bin_index, valid_mask, nr)
-            vcurv_eddy = urut_prime_avg / r_safe[None, :]
-
-            V_mr = ur_avg * dut_dr
-            V_mv = w_avg * dut_dz
-            V_eh = -thadv - V_mr - vcurv_mean - vcurv_eddy
-            V_ev = -tvadv - V_mv
-            V_dh = thidiff + thturb
-            V_dv = tvidiff + tvturb
-            tramp = trdamp
-
-            V_mzeta = V_mr - (-vcurv_mean + tangential_terms.get("cor", np.zeros_like(ut_avg)))
-            V_ezeta = V_eh - vcurv_eddy
-
-            fnu_avg = -V_ezeta - V_ev + V_dh + V_dv + tramp
-            fnu_used = "diagnosed_from_vb_terms"
-        elif fnu_var is not None:
-            fnu_3d = load_3d(fnu_var)
-            fnu_avg = _azimuthal_average_by_radius(fnu_3d, bin_index, valid_mask, nr)
-            fnu_used = fnu_var
-            print(f"[WARN] 缺少ub_/vb_关键预算项，Fnu回退到变量 {fnu_var}。")
-        else:
-            fnu_avg = np.zeros_like(theta_avg)
-            fnu_used = "zero"
-            print("[WARN] 缺少ub_/vb_关键预算项且未提供Fnu变量，动量源置零。")
+            budget_eddy = reconstruct_eddy_from_advection(
+                tangential_terms["hadv"], tangential_terms["vadv"],
+                ur_avg, ut_avg, w_avg, r_m, z_m,
+            )
+            f_eddy_budget = budget_eddy["F_lambda_eddy_budget"]
+            f_eddy_closure = f_eddy_budget - eddy_diag["F_lambda_eddy"]
+            V_ezeta = -budget_eddy["F_lambda_eddy_budget_horizontal"]
+            V_ev = -budget_eddy["F_lambda_eddy_budget_vertical"]
+            V_dh = sum(
+                (tangential_terms.get(s, np.zeros_like(ut_avg)) for s in ("hidiff", "hediff", "hturb")),
+                np.zeros_like(ut_avg),
+            )
+            V_dv = sum(
+                (tangential_terms.get(s, np.zeros_like(ut_avg)) for s in ("vidiff", "vediff", "vturb", "pbl")),
+                np.zeros_like(ut_avg),
+            )
+            tramp = forcing_parts["F_lambda_other_model"]
 
         q_avg = np.nan_to_num(q_avg)
         fnu_avg = np.nan_to_num(fnu_avg)
@@ -661,9 +665,19 @@ def azimuthal_average_from_3d(cfg: PipelineConfig) -> Dict[str, np.ndarray]:
             "F_lambda_eddy_vertical": np.nan_to_num(eddy_diag["F_lambda_eddy_vertical"]),
             "eddy_radial_mass_flux": np.nan_to_num(eddy_diag["radial_mass_flux"]),
             "eddy_vertical_mass_flux": np.nan_to_num(eddy_diag["vertical_mass_flux"]),
+            "F_lambda_diffusion": np.nan_to_num(forcing_parts["F_lambda_diffusion"]),
+            "F_lambda_other_model": np.nan_to_num(forcing_parts["F_lambda_other_model"]),
+            "F_lambda_eddy_budget": np.nan_to_num(f_eddy_budget),
+            "F_lambda_eddy_closure_residual": np.nan_to_num(f_eddy_closure),
             "eddy_average_used": eddy_diag["averaging"],
             "Q_dtheta_dt": dtheta_dt_avg,
+            "Q_eddy": eddy_th_adv_avg,
             "Q_eddy_adv": eddy_th_adv_avg,
+            "Q_eddy_radial": np.nan_to_num(eddy_diag["Q_eddy_radial"]),
+            "Q_eddy_vertical": np.nan_to_num(eddy_diag["Q_eddy_vertical"]),
+            "Q_diffusion": np.nan_to_num(forcing_parts["Q_diffusion"]),
+            "Q_diabatic": np.nan_to_num(forcing_parts["Q_diabatic"]),
+            "Q_other_model": np.nan_to_num(forcing_parts["Q_other_model"]),
             "V_mzeta": V_mzeta,
             "V_ezeta": V_ezeta,
             "V_ev": V_ev,
@@ -673,6 +687,7 @@ def azimuthal_average_from_3d(cfg: PipelineConfig) -> Dict[str, np.ndarray]:
             "Q_used": np.array([q_used]),
             "Fnu_used": np.array([fnu_used]),
             "momentum_budget_pairs_used": np.array(budget_pairs_used, dtype=object),
+            "thermal_budget_terms_used": np.array(thermal_terms_used, dtype=object),
             "dataset_open_path": np.array([open_meta.get("open_path", "")]),
             "dataset_engine": np.array([open_meta.get("engine", "")]),
             "time_index_used": np.array([time_idx], dtype=np.int64),
@@ -1557,7 +1572,20 @@ def run_pipeline(cfg: PipelineConfig) -> None:
         Q=q_mod,
         Fnu=fnu_mod,
         Q_dtheta_dt=avg.get("Q_dtheta_dt", np.zeros_like(q_mod)),
+        Q_eddy=avg.get("Q_eddy", avg.get("Q_eddy_adv", np.zeros_like(q_mod))),
         Q_eddy_adv=avg.get("Q_eddy_adv", np.zeros_like(q_mod)),
+        Q_eddy_radial=avg.get("Q_eddy_radial", np.zeros_like(q_mod)),
+        Q_eddy_vertical=avg.get("Q_eddy_vertical", np.zeros_like(q_mod)),
+        Q_diffusion=avg.get("Q_diffusion", np.zeros_like(q_mod)),
+        Q_diabatic=avg.get("Q_diabatic", np.zeros_like(q_mod)),
+        Q_other_model=avg.get("Q_other_model", np.zeros_like(q_mod)),
+        F_lambda_eddy=avg.get("F_lambda_eddy", np.zeros_like(fnu_mod)),
+        F_lambda_diffusion=avg.get("F_lambda_diffusion", np.zeros_like(fnu_mod)),
+        F_lambda_other_model=avg.get("F_lambda_other_model", np.zeros_like(fnu_mod)),
+        F_lambda_eddy_budget=avg.get("F_lambda_eddy_budget", np.zeros_like(fnu_mod)),
+        F_lambda_eddy_closure_residual=avg.get(
+            "F_lambda_eddy_closure_residual", np.zeros_like(fnu_mod)
+        ),
         V_mzeta=avg.get("V_mzeta", np.zeros_like(fnu_mod)),
         V_ezeta=avg.get("V_ezeta", np.zeros_like(fnu_mod)),
         V_ev=avg.get("V_ev", np.zeros_like(fnu_mod)),
@@ -1600,7 +1628,21 @@ def run_pipeline(cfg: PipelineConfig) -> None:
                 "Q": (("zh", "radius"), q_mod),
                 "Fnu": (("zh", "radius"), fnu_mod),
                 "Q_dtheta_dt": (("zh", "radius"), avg.get("Q_dtheta_dt", np.zeros_like(q_mod))),
+                "Q_eddy": (("zh", "radius"), avg.get("Q_eddy", avg.get("Q_eddy_adv", np.zeros_like(q_mod)))),
                 "Q_eddy_adv": (("zh", "radius"), avg.get("Q_eddy_adv", np.zeros_like(q_mod))),
+                "Q_eddy_radial": (("zh", "radius"), avg.get("Q_eddy_radial", np.zeros_like(q_mod))),
+                "Q_eddy_vertical": (("zh", "radius"), avg.get("Q_eddy_vertical", np.zeros_like(q_mod))),
+                "Q_diffusion": (("zh", "radius"), avg.get("Q_diffusion", np.zeros_like(q_mod))),
+                "Q_diabatic": (("zh", "radius"), avg.get("Q_diabatic", np.zeros_like(q_mod))),
+                "Q_other_model": (("zh", "radius"), avg.get("Q_other_model", np.zeros_like(q_mod))),
+                "F_lambda_eddy": (("zh", "radius"), avg.get("F_lambda_eddy", np.zeros_like(fnu_mod))),
+                "F_lambda_diffusion": (("zh", "radius"), avg.get("F_lambda_diffusion", np.zeros_like(fnu_mod))),
+                "F_lambda_other_model": (("zh", "radius"), avg.get("F_lambda_other_model", np.zeros_like(fnu_mod))),
+                "F_lambda_eddy_budget": (("zh", "radius"), avg.get("F_lambda_eddy_budget", np.zeros_like(fnu_mod))),
+                "F_lambda_eddy_closure_residual": (
+                    ("zh", "radius"),
+                    avg.get("F_lambda_eddy_closure_residual", np.zeros_like(fnu_mod)),
+                ),
                 "V_mzeta": (("zh", "radius"), avg.get("V_mzeta", np.zeros_like(fnu_mod))),
                 "V_ezeta": (("zh", "radius"), avg.get("V_ezeta", np.zeros_like(fnu_mod))),
                 "V_ev": (("zh", "radius"), avg.get("V_ev", np.zeros_like(fnu_mod))),
@@ -1628,6 +1670,7 @@ def run_pipeline(cfg: PipelineConfig) -> None:
                 "center_y_km": float(avg["center_y_km"][0]),
                 "Q_source": source_info["Q_source"],
                 "Fnu_source": source_info["Fnu_source"],
+                "eddy_average": str(avg.get("eddy_average_used", np.array([cfg.eddy_average]))[0]),
             },
         )
         _safe_write_netcdf(ds_out, out_dir / "se_pipeline_products.nc")
@@ -1655,6 +1698,13 @@ def run_pipeline(cfg: PipelineConfig) -> None:
         },
         "source_info": source_info,
         "momentum_budget_pairs_used": [str(x) for x in avg.get("momentum_budget_pairs_used", np.array([], dtype=object))],
+        "thermal_budget_terms_used": [str(x) for x in avg.get("thermal_budget_terms_used", np.array([], dtype=object))],
+        "eddy_average": str(avg.get("eddy_average_used", np.array([cfg.eddy_average]))[0]),
+        "eddy_momentum_closure": {
+            "rms_m_s2": float(np.sqrt(np.nanmean(avg.get("F_lambda_eddy_closure_residual", np.zeros_like(fnu_mod)) ** 2))),
+            "max_abs_m_s2": float(np.nanmax(np.abs(avg.get("F_lambda_eddy_closure_residual", np.zeros_like(fnu_mod))))),
+            "definition": "budget reconstruction minus direct 3-D flux convergence",
+        },
         "regularization": reg_info,
         "solver_bc": {
             "radial": "dpsi/dr=0 at inner and outer radius",
@@ -1720,6 +1770,10 @@ def parse_args() -> PipelineConfig:
     p.add_argument("--fnu-override-file", default="", help="外部动量源二维场文件(.npy/.npz/.nc)，维度(zh,radius)")
     p.add_argument("--q-constant", type=float, default=0.0, help="当热力源缺失且未提供覆盖文件时使用常数")
     p.add_argument("--fnu-constant", type=float, default=0.0, help="当动量源缺失且未提供覆盖文件时使用常数")
+    p.add_argument(
+        "--eddy-average", choices=["reynolds", "favre"], default="reynolds",
+        help="涡动通量分解；Bui方程严格对应Reynolds方位平均（默认）",
+    )
 
     p.add_argument("--max-r-km", type=float, default=300.0)
     p.add_argument("--dr-km", type=float, default=2.0)
@@ -1793,6 +1847,7 @@ def parse_args() -> PipelineConfig:
         fnu_override_file=args.fnu_override_file,
         q_constant=args.q_constant,
         fnu_constant=args.fnu_constant,
+        eddy_average=args.eddy_average,
         max_r_km=args.max_r_km,
         dr_km=args.dr_km,
         enforce_dr_not_finer_than_grid=(not args.allow_fine_radial_bins),

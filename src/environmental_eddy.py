@@ -1,8 +1,10 @@
-"""Environmental-eddy tangential-momentum forcing diagnostics.
+"""Environmental-eddy momentum and heat forcing diagnostics.
 
 The routines in this module diagnose the azimuthal-eddy contribution to the
 tangential momentum equation from storm-centred three-dimensional CM1 fields.
-For compressible CM1 output, Favre (density-weighted) averaging is the default.
+Reynolds averaging is the default because it matches the prime convention in
+Bui et al. (2009).  Favre averaging remains available as a mass-weighted
+extension when a consistently Favre-averaged basic state is also used.
 
 With outward radial velocity ``u``, tangential velocity ``v`` and vertical
 velocity ``w``, the diagnosed acceleration is
@@ -10,9 +12,13 @@ velocity ``w``, the diagnosed acceleration is
     F_lambda,eddy = -1/(rho_bar r^2) d[r^2 <rho u'' v''>]/dr
                     -1/rho_bar d[<rho w'' v''>]/dz,
 
-where double primes denote departures from the Favre azimuthal mean.  This is
-equivalent to diagnosing the convergence of eddy absolute-angular-momentum
-flux and then dividing the result by radius.
+where double primes denote departures from the selected azimuthal mean.  The
+Favre form is conservative for compressible flow; Reynolds averaging matches
+the prime convention used by Bui et al. (2009).  The corresponding eddy heat
+forcing is
+
+    Q_eddy = -1/(rho_bar r) d[r <rho u'' theta''>]/dr
+             -1/rho_bar d[<rho w'' theta''>]/dz.
 """
 
 from __future__ import annotations
@@ -114,6 +120,46 @@ def eddy_flux_divergence(
     }
 
 
+def eddy_scalar_flux_divergence(
+    rho_bar_zr: np.ndarray,
+    radial_mass_flux_zr: np.ndarray,
+    vertical_mass_flux_zr: np.ndarray,
+    r_m: np.ndarray,
+    z_m: np.ndarray,
+) -> Dict[str, np.ndarray]:
+    """Return cylindrical convergence of eddy scalar (heat) fluxes.
+
+    The two flux arguments are ``<rho u'' theta''>`` and
+    ``<rho w'' theta''>``. Returned tendencies have units K s-1.
+    """
+    rho_bar = np.asarray(rho_bar_zr, dtype=np.float64)
+    flux_r = np.asarray(radial_mass_flux_zr, dtype=np.float64)
+    flux_z = np.asarray(vertical_mass_flux_zr, dtype=np.float64)
+    r = np.asarray(r_m, dtype=np.float64)
+    z = np.asarray(z_m, dtype=np.float64)
+
+    if rho_bar.shape != flux_r.shape or rho_bar.shape != flux_z.shape:
+        raise ValueError("rho_bar and both scalar-flux arrays must share shape (z, r)")
+    if rho_bar.shape != (z.size, r.size):
+        raise ValueError("scalar-flux arrays do not match the supplied z/r coordinates")
+
+    if r.size > 1:
+        r_safe = np.maximum(r, 0.5 * float(np.nanmin(np.diff(r))))
+    else:
+        r_safe = np.maximum(r, 1.0)
+    rho_safe = np.maximum(rho_bar, 1.0e-10)
+
+    forcing_radial = -safe_gradient(flux_r * r_safe[None, :], r, axis=1) / (
+        rho_safe * r_safe[None, :]
+    )
+    forcing_vertical = -safe_gradient(flux_z, z, axis=0) / rho_safe
+    return {
+        "forcing": forcing_radial + forcing_vertical,
+        "forcing_radial": forcing_radial,
+        "forcing_vertical": forcing_vertical,
+    }
+
+
 def diagnose_eddy_momentum_forcing(
     ur_3d: np.ndarray,
     ut_3d: np.ndarray,
@@ -124,16 +170,17 @@ def diagnose_eddy_momentum_forcing(
     nr: int,
     r_m: np.ndarray,
     z_m: np.ndarray,
-    averaging: str = "favre",
+    averaging: str = "reynolds",
+    theta_3d: np.ndarray | None = None,
 ) -> Dict[str, np.ndarray]:
-    """Diagnose eddy tangential-momentum forcing on the ``(z, r)`` grid.
+    """Diagnose eddy momentum and optional heat forcing on ``(z, r)``.
 
     Parameters
     ----------
     averaging:
-        ``"favre"`` (recommended for CM1) or ``"reynolds"``.  Reynolds mode
-        uses ordinary azimuthal perturbations and multiplies their covariance
-        by the azimuthal-mean density before taking the flux divergence.
+        ``"reynolds"`` reproduces the prime convention in Bui et al. (2009).
+        ``"favre"`` is a conservative compressible extension, but should be
+        paired with a consistently Favre-averaged basic state.
     """
     ur = np.asarray(ur_3d, dtype=np.float64)
     ut = np.asarray(ut_3d, dtype=np.float64)
@@ -141,6 +188,9 @@ def diagnose_eddy_momentum_forcing(
     rho = np.asarray(rho_3d, dtype=np.float64)
     if not (ur.shape == ut.shape == w.shape == rho.shape):
         raise ValueError("ur, ut, w and rho must share shape (z, y, x)")
+    theta = None if theta_3d is None else np.asarray(theta_3d, dtype=np.float64)
+    if theta is not None and theta.shape != ur.shape:
+        raise ValueError("theta_3d must share shape (z, y, x) with the velocity fields")
 
     averaging_key = averaging.strip().lower()
     if averaging_key not in {"favre", "reynolds"}:
@@ -157,14 +207,29 @@ def diagnose_eddy_momentum_forcing(
         ur_mean = _bin_mean(rho * ur, bin_index_1d, valid_mask_1d, nr) / rho_safe
         ut_mean = _bin_mean(rho * ut, bin_index_1d, valid_mask_1d, nr) / rho_safe
         w_mean = _bin_mean(rho * w, bin_index_1d, valid_mask_1d, nr) / rho_safe
+        theta_mean = (
+            _bin_mean(rho * theta, bin_index_1d, valid_mask_1d, nr) / rho_safe
+            if theta is not None
+            else None
+        )
     else:
         ur_mean = _bin_mean(ur, bin_index_1d, valid_mask_1d, nr)
         ut_mean = _bin_mean(ut, bin_index_1d, valid_mask_1d, nr)
         w_mean = _bin_mean(w, bin_index_1d, valid_mask_1d, nr)
+        theta_mean = (
+            _bin_mean(theta, bin_index_1d, valid_mask_1d, nr)
+            if theta is not None
+            else None
+        )
 
     ur_prime = ur - _expand_mean(ur_mean, bin_index_1d, valid_mask_1d, ny, nx)
     ut_prime = ut - _expand_mean(ut_mean, bin_index_1d, valid_mask_1d, ny, nx)
     w_prime = w - _expand_mean(w_mean, bin_index_1d, valid_mask_1d, ny, nx)
+    theta_prime = (
+        theta - _expand_mean(theta_mean, bin_index_1d, valid_mask_1d, ny, nx)
+        if theta is not None and theta_mean is not None
+        else None
+    )
 
     if averaging_key == "favre":
         flux_r_mass = _bin_mean(
@@ -182,7 +247,7 @@ def diagnose_eddy_momentum_forcing(
     divergence = eddy_flux_divergence(
         rho_bar, flux_r_mass, flux_z_mass, r_m, z_m
     )
-    return {
+    result = {
         "averaging": np.array([averaging_key]),
         "rho_bar": rho_bar,
         "ur_mean": ur_mean,
@@ -194,6 +259,35 @@ def diagnose_eddy_momentum_forcing(
         "F_lambda_eddy_radial": divergence["forcing_radial"],
         "F_lambda_eddy_vertical": divergence["forcing_vertical"],
     }
+    if theta_prime is not None:
+        if averaging_key == "favre":
+            heat_flux_r = _bin_mean(
+                rho * ur_prime * theta_prime, bin_index_1d, valid_mask_1d, nr
+            )
+            heat_flux_z = _bin_mean(
+                rho * w_prime * theta_prime, bin_index_1d, valid_mask_1d, nr
+            )
+        else:
+            heat_flux_r = rho_bar * _bin_mean(
+                ur_prime * theta_prime, bin_index_1d, valid_mask_1d, nr
+            )
+            heat_flux_z = rho_bar * _bin_mean(
+                w_prime * theta_prime, bin_index_1d, valid_mask_1d, nr
+            )
+        heat = eddy_scalar_flux_divergence(
+            rho_bar, heat_flux_r, heat_flux_z, r_m, z_m
+        )
+        result.update(
+            {
+                "theta_mean": theta_mean,
+                "eddy_radial_heat_mass_flux": heat_flux_r,
+                "eddy_vertical_heat_mass_flux": heat_flux_z,
+                "Q_eddy": heat["forcing"],
+                "Q_eddy_radial": heat["forcing_radial"],
+                "Q_eddy_vertical": heat["forcing_vertical"],
+            }
+        )
+    return result
 
 
 def environmental_difference(

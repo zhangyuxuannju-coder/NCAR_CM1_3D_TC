@@ -5,8 +5,8 @@
 
 ## 1. 环境涡动动量强迫
 
-程序首先以各自的台风中心进行柱坐标转换。默认使用适合可压缩 CM1 输出的
-Favre 方位平均。直接从三维扰动通量诊断
+程序首先以各自的台风中心进行柱坐标转换。默认使用与 Bui et al. (2009)
+prime 定义一致的 Reynolds 方位平均。直接从三维扰动通量诊断
 
 \[
 F_{\lambda,\mathrm{eddy}}
@@ -57,7 +57,19 @@ g\frac{\partial(\chi^2Q)}{\partial r}
 \]
 
 默认不使用旧 NCL 路径中的 15 km 指数海绵，斜压系数缩放默认为物理原式
-的 1.0。旧的 `single`、`evap` 和 `timeavg` 模式保持不变，以便复现实验。
+的 1.0。`single`、`evap` 和 `timeavg` 现在共用同一套修正后的 Bui 强迫组装；
+时间平均模式先逐时次计算非线性涡动通量，再对诊断结果做时间平均。
+
+完整基线强迫按下式组织：
+
+\[
+Q=Q_{\rm eddy}+Q_{\rm diffusion}+Q_{\rm diabatic}+Q_{\rm other},
+\qquad
+F_\lambda=F_{\lambda,\rm eddy}+F_{\lambda,\rm diffusion}+F_{\lambda,\rm other}.
+\]
+
+CM1 的 `hadv`/`vadv` 只用于独立闭合检验，不再加入总强迫，因而不会与
+直接从三维扰动通量求得的 eddy convergence 重复计数。
 
 ## 3. 运行命令
 
@@ -67,7 +79,7 @@ python scripts/run_se_pipeline.py \
   --input-file dataset/cm1out_CTRL.nc \
   --jet-input-file dataset/cm1out_JET.nc \
   --target-time-hours 72 \
-  --eddy-average favre \
+  --eddy-average reynolds \
   --bui-baroclinic-scale 1.0 \
   --dr-km 12 \
   --output-dir output/se_pipeline/env_72h
@@ -76,14 +88,16 @@ python scripts/run_se_pipeline.py \
 `--input-file` 始终表示 CTRL，`--jet-input-file` 表示 JET。两个文件必须具有
 相同的水平/垂直网格和可比较的输出时间。
 
-可使用 `--eddy-average reynolds` 做普通 Reynolds 平均敏感性试验，但主结果
-建议使用 `favre`。
+可使用 `--eddy-average favre` 做质量加权敏感性试验，但只有在基本态也采用
+一致的 Favre 平均时才能视为严格自洽的可压缩扩展；主结果建议保留默认的
+`reynolds`。
 
 ## 4. 输出
 
 - `se_environmental_eddy_products.npz`：完整算子、强迫和解场；
 - `se_environmental_eddy_products.nc`：便于 NCL/xarray 读取的主要结果；
 - `se_environmental_eddy_response.png`：强迫与次级环流机制图；
+- `environmental_eddy_forcing.png`：单独绘制总、径向和垂直环境 eddy 强迫；
 - `environmental_eddy_summary.json`：中心位置、平衡残差和正则化统计。
 
 核心变量包括：
@@ -100,4 +114,3 @@ python scripts/run_se_pipeline.py \
 \psi_{\mathrm{CTRL+env}}-
 \psi_{\mathrm{CTRL}}=\psi_{\mathrm{env}}.
 \]
-

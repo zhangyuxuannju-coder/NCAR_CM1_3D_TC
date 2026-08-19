@@ -22,10 +22,12 @@ import struct
 
 try:
     from .center_finder import find_smoothed_min_point
+    from ._se_pipeline_single import azimuthal_average_from_3d as _bui_azimuthal_average_from_3d
 
     HAS_CENTER_FINDER = True
 except Exception:
     HAS_CENTER_FINDER = False
+    from src._se_pipeline_single import azimuthal_average_from_3d as _bui_azimuthal_average_from_3d
 
 
 G = 9.806
@@ -71,6 +73,7 @@ class PipelineConfig:
     fnu_override_file: str = ""
     q_constant: float = 0.0
     fnu_constant: float = 0.0
+    eddy_average: str = "reynolds"
 
     max_r_km: float = 300.0
     dr_km: float = 2.0
@@ -453,7 +456,7 @@ def _repair_nan_2d(field: np.ndarray) -> np.ndarray:
     return out
 
 
-def azimuthal_average_from_3d(cfg: PipelineConfig) -> Dict[str, np.ndarray]:
+def _legacy_azimuthal_average_from_3d(cfg: PipelineConfig) -> Dict[str, np.ndarray]:
     ds, open_meta, subst_letter, subst_created_now = _open_dataset_robust(cfg.input_file)
     try:
         var_map = _resolve_core_var_names(ds, cfg)
@@ -679,6 +682,11 @@ def azimuthal_average_from_3d(cfg: PipelineConfig) -> Dict[str, np.ndarray]:
     finally:
         ds.close()
         _subst_unmap(subst_letter, subst_created_now)
+
+
+def azimuthal_average_from_3d(cfg: PipelineConfig) -> Dict[str, np.ndarray]:
+    """Use the common corrected Bui preprocessing for the evap experiment."""
+    return _bui_azimuthal_average_from_3d(cfg)
 
 
 def invert_theta_from_thermal_wind(
@@ -1328,6 +1336,8 @@ def run_pipeline(cfg: PipelineConfig) -> None:
     out_dir = Path(cfg.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    # Share the corrected Bui forcing assembly with single/env modes.  The
+    # evap experiment changes Q only after this common preprocessing step.
     avg = azimuthal_average_from_3d(cfg)
     r_km = avg["r_km"]
     z_km = avg["z_km"]
@@ -1489,7 +1499,18 @@ def run_pipeline(cfg: PipelineConfig) -> None:
         Q=q_mod,
         Fnu=fnu_mod,
         Q_dtheta_dt=avg.get("Q_dtheta_dt", np.zeros_like(q_mod)),
+        Q_eddy=avg.get("Q_eddy", avg.get("Q_eddy_adv", np.zeros_like(q_mod))),
         Q_eddy_adv=avg.get("Q_eddy_adv", np.zeros_like(q_mod)),
+        Q_eddy_radial=avg.get("Q_eddy_radial", np.zeros_like(q_mod)),
+        Q_eddy_vertical=avg.get("Q_eddy_vertical", np.zeros_like(q_mod)),
+        Q_diffusion=avg.get("Q_diffusion", np.zeros_like(q_mod)),
+        Q_diabatic=avg.get("Q_diabatic", np.zeros_like(q_mod)),
+        Q_other_model=avg.get("Q_other_model", np.zeros_like(q_mod)),
+        F_lambda_eddy=avg.get("F_lambda_eddy", np.zeros_like(fnu_mod)),
+        F_lambda_diffusion=avg.get("F_lambda_diffusion", np.zeros_like(fnu_mod)),
+        F_lambda_other_model=avg.get("F_lambda_other_model", np.zeros_like(fnu_mod)),
+        F_lambda_eddy_budget=avg.get("F_lambda_eddy_budget", np.zeros_like(fnu_mod)),
+        F_lambda_eddy_closure_residual=avg.get("F_lambda_eddy_closure_residual", np.zeros_like(fnu_mod)),
         V_mzeta=avg.get("V_mzeta", np.zeros_like(fnu_mod)),
         V_ezeta=avg.get("V_ezeta", np.zeros_like(fnu_mod)),
         V_ev=avg.get("V_ev", np.zeros_like(fnu_mod)),
@@ -1532,7 +1553,18 @@ def run_pipeline(cfg: PipelineConfig) -> None:
                 "Q": (("zh", "radius"), q_mod),
                 "Fnu": (("zh", "radius"), fnu_mod),
                 "Q_dtheta_dt": (("zh", "radius"), avg.get("Q_dtheta_dt", np.zeros_like(q_mod))),
+                "Q_eddy": (("zh", "radius"), avg.get("Q_eddy", avg.get("Q_eddy_adv", np.zeros_like(q_mod)))),
                 "Q_eddy_adv": (("zh", "radius"), avg.get("Q_eddy_adv", np.zeros_like(q_mod))),
+                "Q_eddy_radial": (("zh", "radius"), avg.get("Q_eddy_radial", np.zeros_like(q_mod))),
+                "Q_eddy_vertical": (("zh", "radius"), avg.get("Q_eddy_vertical", np.zeros_like(q_mod))),
+                "Q_diffusion": (("zh", "radius"), avg.get("Q_diffusion", np.zeros_like(q_mod))),
+                "Q_diabatic": (("zh", "radius"), avg.get("Q_diabatic", np.zeros_like(q_mod))),
+                "Q_other_model": (("zh", "radius"), avg.get("Q_other_model", np.zeros_like(q_mod))),
+                "F_lambda_eddy": (("zh", "radius"), avg.get("F_lambda_eddy", np.zeros_like(fnu_mod))),
+                "F_lambda_diffusion": (("zh", "radius"), avg.get("F_lambda_diffusion", np.zeros_like(fnu_mod))),
+                "F_lambda_other_model": (("zh", "radius"), avg.get("F_lambda_other_model", np.zeros_like(fnu_mod))),
+                "F_lambda_eddy_budget": (("zh", "radius"), avg.get("F_lambda_eddy_budget", np.zeros_like(fnu_mod))),
+                "F_lambda_eddy_closure_residual": (("zh", "radius"), avg.get("F_lambda_eddy_closure_residual", np.zeros_like(fnu_mod))),
                 "V_mzeta": (("zh", "radius"), avg.get("V_mzeta", np.zeros_like(fnu_mod))),
                 "V_ezeta": (("zh", "radius"), avg.get("V_ezeta", np.zeros_like(fnu_mod))),
                 "V_ev": (("zh", "radius"), avg.get("V_ev", np.zeros_like(fnu_mod))),
@@ -1652,6 +1684,7 @@ def parse_args() -> PipelineConfig:
     p.add_argument("--fnu-override-file", default="", help="外部动量源二维场文件(.npy/.npz/.nc)，维度(zh,radius)")
     p.add_argument("--q-constant", type=float, default=0.0, help="当热力源缺失且未提供覆盖文件时使用常数")
     p.add_argument("--fnu-constant", type=float, default=0.0, help="当动量源缺失且未提供覆盖文件时使用常数")
+    p.add_argument("--eddy-average", choices=["reynolds", "favre"], default="reynolds")
 
     p.add_argument("--max-r-km", type=float, default=300.0)
     p.add_argument("--dr-km", type=float, default=2.0)
@@ -1744,6 +1777,7 @@ def parse_args() -> PipelineConfig:
         fnu_override_file=args.fnu_override_file,
         q_constant=args.q_constant,
         fnu_constant=args.fnu_constant,
+        eddy_average=args.eddy_average,
         max_r_km=args.max_r_km,
         dr_km=args.dr_km,
         enforce_dr_not_finer_than_grid=(not args.allow_fine_radial_bins),
