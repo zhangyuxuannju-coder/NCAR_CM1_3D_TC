@@ -11,13 +11,14 @@
 3. [功能一：台风中心定位与追踪](#3-功能一台风中心定位与追踪)
 4. [功能二：方位角平均与动量收支诊断](#4-功能二方位角平均与动量收支诊断)
 5. [功能三：SE 方程次级环流诊断](#5-功能三se-方程次级环流诊断)
-4. [功能四：动量收支诊断单页图 ⭐](#6-功能四动量收支诊断单页图-核心绘图)
+6. [功能四：动量收支诊断单页图 ⭐](#6-功能四动量收支诊断单页图-核心绘图)
 7. [功能五：水平风场绘图与视频](#7-功能五水平风场绘图与视频)
 8. [功能六：径向剖面提取](#8-功能六径向剖面提取)
 9. [功能七：敏感性实验](#9-功能七敏感性实验)
 10. [功能八：图片合成视频](#10-功能八图片合成视频)
 11. [常见问题](#11-常见问题)
 12. [从原始代码迁移对照](#12-从原始代码迁移对照)
+13. [JET–CTRL 环境涡动 SE 与适用性诊断](#13-jetctrl-环境涡动-se-诊断)
 
 ---
 
@@ -287,7 +288,7 @@ python scripts/run_budget_diagnostic.py \
 ```bash
 python scripts/run_se_pipeline.py \
     --mode single \
-    --input dataset/cm1out.nc \
+    --input-file dataset/cm1out.nc \
     --target-time-hours 48 \
     --output-dir output/se_pipeline/single_48h \
     --sor-omega 1.8
@@ -300,7 +301,7 @@ python scripts/run_se_pipeline.py \
 ```bash
 python scripts/run_se_pipeline.py \
     --mode evap \
-    --input dataset/cm1out.nc \
+    --input-file dataset/cm1out.nc \
     --target-time-hours 72 \
     --output-dir output/se_pipeline/evap_72h \
     --evap-q0 -2e-4 \
@@ -316,7 +317,7 @@ python scripts/run_se_pipeline.py \
 ```bash
 python scripts/run_se_pipeline.py \
     --mode timeavg \
-    --input dataset/cm1out.nc \
+    --input-file dataset/cm1out.nc \
     --time-avg-start-hours 64 --time-avg-end-hours 72 \
     --output-dir output/se_pipeline/avg_64_72h \
     --sor-omega 1.5
@@ -604,3 +605,277 @@ python scripts/make_video.py \
 | `convert_to_pptx.py` | 保留在原位 | 独立文档工具 |
 
 所有原始文件保持不动，可继续独立使用。
+
+---
+
+## 13. JET–CTRL 环境涡动 SE 诊断
+
+新增 `--mode env`，直接从 CTRL/JET 三维风场计算 Reynolds 涡动角动量通量
+辐合，构造 `F_lambda_env = F_eddy(JET) - F_eddy(CTRL)`，并使用固定 CTRL
+的 Bui general SE operator 求解直接环境强迫响应。
+
+所有 SE 模式现在都从原始三维 CM1 场先做 TC 中心柱坐标分解，再形成二维
+方位平均基本态和强迫。总 `Q`/`Fnu` 包含 eddy、扩散/PBL、非绝热及其他
+CM1 显式源项；`hadv`/`vadv` 仅用于闭合检查，不与直接 eddy flux convergence
+重复相加。各分量保存在 `se_pipeline_products.npz/.nc` 中。
+
+完整公式、命令、输出变量和解释见
+[`ENVIRONMENTAL_EDDY_SE.md`](ENVIRONMENTAL_EDDY_SE.md)。
+
+在正式求解前，建议先运行 `--mode stability`，绘制 CTRL/JET 未正则化的
+`I2_raw`、`D_raw`，并检查它们与 `F_lambda_env`、上层出流和急流位置的重合。
+命令、分类含义和输出说明见 [`SE_APPLICABILITY.md`](SE_APPLICABILITY.md)。
+
+本次代码修改包括：
+
+- 新增 `src/se_applicability.py`：计算实际基本态、平衡投影和正则化比较三套稳定性场；
+- 新增 `src/stability_cli.py`：把稳定性诊断接入统一命令行；
+- `scripts/run_se_pipeline.py` 新增 `--mode stability` 和全部绘图参数；
+- `src/environmental_eddy.py` 新增方位 eddy kinetic energy，用作急流/非对称风速位置代理；
+- stability 模式跳过无关 CM1 budget 读取，并检查 CTRL/JET 时次一致性；
+- 新增稳定性分类、强迫重合统计、NetCDF/NPZ/JSON 输出和回归测试。
+
+### 13.1 推荐工作流程
+
+建议不要直接从 regularization 后的 SE 解开始解释，而按以下顺序运行：
+
+1. 使用 `--mode stability` 检查 CTRL 和 JET 的原始 (I^2,D)；
+2. 检查 `F_lambda_env` 最大区是否与 `D_raw<=0` 重合；
+3. 如果固定 CTRL 基本态在目标区满足 `K1>0, I2>0, D>0`，再运行 `--mode env`；
+4. 对 `D_raw<=0` 区，只把正则化 SE 解解释为 balanced projection，不解释为原始模拟的真实次级环流。
+
+主诊断使用 CM1 实际方位平均的 `theta/v`：
+
+\[
+K_1=-g\frac{\partial\chi}{\partial z},
+\qquad
+I^2=\chi\xi(\zeta+f)+C_g\frac{\partial\chi}{\partial r},
+\]
+
+\[
+D=K_1I^2-
+\left[\frac{\partial(\chi C_g)}{\partial z}\right]^2.
+\]
+
+程序严格区分：
+
+- `*_raw`：CM1 实际方位平均基本态，没有热成风投影或正则化；
+- `*_balanced_projection`：使用热成风反演位温，但没有正则化；
+- `*_regularized`：为得到椭圆算子而调整后的比较场，不代表原始稳定性。
+
+### 13.2 在服务器运行稳定性诊断
+
+先更新代码并进入仓库：
+
+```bash
+git pull origin main
+cd NCAR_CM1_3D_TC
+```
+
+然后运行：
+
+```bash
+python scripts/run_se_pipeline.py \
+  --mode stability \
+  --input-file /path/to/CTRL/cm1out.nc \
+  --jet-input-file /path/to/JET/cm1out.nc \
+  --target-time-hours 72 \
+  --eddy-average reynolds \
+  --f 5.0e-5 \
+  --dr-km 12 \
+  --max-r-km 1200 \
+  --max-z-km 20 \
+  --center-window 21 \
+  --center-method min \
+  --stability-outflow-threshold 2 \
+  --stability-jet-speed-threshold 20 \
+  --stability-forcing-percentile 90 \
+  --stability-jet-axis-r-km 888 \
+  --stability-jet-axis-z-km 12 \
+  --output-dir output/se_applicability/72h
+```
+
+上例中的 `888 km` 和 `12 km` 分别对应当前 CM1 namelist 的
+`jet_y_dist=888000 m` 和 `jet_z_ctr=12000 m`。如果改变了急流配置，应同步
+修改这两个绘图参数。为了在图中显示急流轴，`--max-r-km` 必须大于急流轴
+距 TC 中心的距离；如果只研究内核区，可以缩小半径并省略急流轴参数。
+
+该模式不运行 SOR/SE 求解器，并主动跳过不需要的 CM1 `ptb_*`、`ub_*`、
+`vb_*` budget 读取；主要计算成本来自两组原始三维风、密度和位温的读取及
+TC 中心柱坐标方位分解。
+
+### 13.3 stability 模式参数说明
+
+#### 必需路径和模式参数
+
+| 参数 | 默认值 | 含义 |
+|:---|:---|:---|
+| `--mode stability` | `single` | 启用 CTRL/JET 原始 SE 适用性诊断；该模式只诊断，不求解 SE 方程。 |
+| `--input-file PATH` | `dataset/cm1out.nc` | CTRL 试验的 CM1 原始三维 NetCDF 文件。 |
+| `--jet-input-file PATH` | 空 | JET 试验的 CM1 原始三维 NetCDF 文件；stability 模式必须提供。 |
+| `--output-dir DIR` | `output/se_pipeline` | PNG、NetCDF、NPZ 和 JSON 的输出目录。建议每个时次使用独立目录。 |
+
+#### 时间选择参数
+
+| 参数 | 默认值 | 含义 |
+|:---|:---|:---|
+| `--time-index N` | `0` | 按 NetCDF 时间维下标选择时次。未指定目标时间时使用。 |
+| `--target-time-seconds SEC` | 空 | 按秒选择最近的输出时次。不能与 `--target-time-hours` 同时使用。 |
+| `--target-time-hours HOUR` | 空 | 按小时选择最近的输出时次，例如 `72`。优先于 `--time-index`。 |
+
+CTRL 和 JET 最终选中的时间必须相差不超过 1 秒，否则程序会停止，避免把
+不同演变阶段误作 JET−CTRL 差值。
+
+#### 方位平均网格和台风中心参数
+
+| 参数 | 默认值 | 含义 |
+|:---|:---|:---|
+| `--max-r-km R` | `300` | 诊断最大半径。若要显示当前 888 km 的急流轴，建议至少设为 `1000–1200`。 |
+| `--dr-km DR` | `2` | 方位平均径向分箱宽度。若小于原始水平网格距，程序默认自动提高到原始分辨率。 |
+| `--allow-fine-radial-bins` | 关闭 | 允许 `dr` 小于原始网格距；可能产生空环带和条纹，一般不建议。 |
+| `--max-z-km Z` | `20` | 保留的最大高度。应覆盖急流、TC outflow 和其上方稳定层。 |
+| `--center-window N` | `21` | 最低平滑海平面/地面气压定位前使用的水平平滑窗口，单位为格点。 |
+| `--center-method {min,mean}` | `min` | 台风中心定位方法；`min` 使用平滑气压最低点，`mean` 使用中心定位模块的平均方法。 |
+
+#### 物理和涡动分解参数
+
+| 参数 | 默认值 | 含义 |
+|:---|:---|:---|
+| `--f VALUE` | `5.0e-5 s^-1` | 科氏参数。应与 CM1 试验设置或研究纬度一致。直接影响 `xi`、绝对涡度和 `I2`。 |
+| `--eddy-average {reynolds,favre}` | `reynolds` | 涡动方位分解。`reynolds` 与 Bui 的 prime 定义一致；`favre` 是质量加权敏感性方案。 |
+| `--theta-floor K` | `150` | 热成风平衡投影中的最低允许位温，只影响 `*_balanced_projection` 和后续比较，不覆盖 `*_raw`。 |
+| `--theta-outer-smooth-window N` | `1` | 热成风反演时外边界位温廓线的垂直平滑窗口；`1` 表示不平滑。 |
+| `--inertia-eps-ratio X` | `1.0e-3` | 正则化比较中 `K1/I2` 正下限相对于场幅值的比例；不影响 `*_raw`。 |
+| `--elliptic-margin X` | `0` | 正则化比较要求的判别式绝对下限；不影响 `*_raw`。 |
+
+`stability` 模式计算原始 (I^2,D) 时始终使用物理的
+`baroclinic_scale=1.0`。全局参数 `--baroclinic-scale` 和
+`--bui-baroclinic-scale` 不会改变本模式的 `I2_raw/D_raw`。
+
+#### 图形叠加参数
+
+| 参数 | 默认值 | 含义 |
+|:---|:---|:---|
+| `--stability-outflow-threshold MS` | `2 m s^-1` | 绿色等值线：JET 方位平均径向风达到该正值的位置，用于标记上层 outflow。 |
+| `--stability-jet-speed-threshold MS` | `20 m s^-1` | 橙色等值线：`sqrt(2*eddy_kinetic_energy)` 达到该值的位置，是急流/非对称风速代理，不等同于 imposed jet 本身。 |
+| `--stability-forcing-percentile P` | `90` | 在 `I2/D` 图上叠加的正、负 `F_lambda_env` 强值等值线百分位，范围 `0–100`。 |
+| `--stability-jet-axis-r-km R` | 空 | 可选 imposed jet 轴到 TC 中心的半径；与高度同时给出时绘制金色星号。 |
+| `--stability-jet-axis-z-km Z` | 空 | 可选 imposed jet 轴高度；与半径同时给出时绘制金色星号。 |
+
+#### 输出控制参数
+
+| 参数 | 默认值 | 含义 |
+|:---|:---|:---|
+| `--no-write-netcdf` | 关闭 | 不写 `se_applicability_products.nc`，但仍写压缩 NPZ 和 JSON。 |
+| `--no-plot-solution` | 关闭 | 在 stability 模式中表示不生成两张 PNG，只写数值产品。 |
+
+以下全局参数在 `stability` 模式中不参与计算：`--sor-*`、
+`--regularization-max-iter`、`--q-override-file`、`--fnu-override-file`、
+`--q-constant`、`--fnu-constant`、`--q-name`、`--fnu-name`、
+`--q-candidates`、`--fnu-candidates`、`--source-mask-json`、
+`--no-write-ieee`、`--ieee-prefix`、`--evap-*`、
+`--time-avg-start-hours` 和 `--time-avg-end-hours`。
+
+#### CM1 变量名映射参数
+
+通常无需设置，程序会依次搜索候选变量。只有您的 CM1 输出变量名不同才需要覆盖。
+
+| 参数 | 默认首选变量 | 含义 |
+|:---|:---|:---|
+| `--u-name` / `--u-candidates` | `u` / `u,ua,uinterp` | x 方向风及其候选列表。 |
+| `--v-name` / `--v-candidates` | `v` / `v,va,vinterp` | y 方向风及其候选列表。 |
+| `--w-name` / `--w-candidates` | `w` / `w,wa,winterp` | 垂直速度及其候选列表。 |
+| `--prs-name` / `--prs-candidates` | `prs` / `prs,pres,p` | 三维气压；用于统一核心输入检查。 |
+| `--rho-name` / `--rho-candidates` | `rho` / `rho,rhoa,dens` | 三维密度。 |
+| `--theta-name` / `--theta-candidates` | `th` / `th,theta,thpert` | 三维位温。必须确认选中的变量是程序所需的总位温，而不是未经恢复的扰动量。 |
+| `--psfc-name` / `--psfc-candidates` | `psfc` / `psfc,sfcprs,ps` | 地面气压，用于逐试验定位 TC 中心；缺失时回退到计算域中心。 |
+
+候选列表使用英文逗号分隔，例如：
+
+```bash
+--theta-name theta --theta-candidates theta,th
+```
+
+### 13.4 稳定性分类和图中线条
+
+`stability_class_ctrl/jet` 使用四种互斥分类：
+
+| 编码 | 条件 | 解释 |
+|:---:|:---|:---|
+| `0` | `K1>0, I2>0, D>0` | 经典 SE 椭圆区。 |
+| `1` | `K1>0, I2<=0` | 惯性不稳定区。 |
+| `2` | `K1>0, I2>0, D<=0` | 惯性上稳定但对称/强切变非椭圆区。 |
+| `3` | `K1<=0` | 静力不稳定区；分类时具有最高优先级。 |
+
+图中叠加含义：
+
+- 黑色实线：正的强 `F_lambda_env`；
+- 黑色虚线：负的强 `F_lambda_env`；
+- 绿色线：JET 方位平均径向 outflow；
+- 橙色线：急流/非对称风速代理；
+- 金色星号：用户输入的 imposed jet 轴；
+- 蓝色实线：CTRL 的 `D_raw=0`；
+- 红色虚线：JET 的 `D_raw=0`。
+
+### 13.5 输出文件和关键变量
+
+| 输出文件 | 内容 |
+|:---|:---|
+| `se_applicability_I2_D.png` | CTRL/JET 的原始 `I2`、`D` 和 JET−CTRL 差值，并叠加强迫、outflow 和急流位置。 |
+| `se_applicability_classes.png` | CTRL/JET 四类稳定性区，以及 `F_lambda_env` 与两组 `D=0` 边界的重合。 |
+| `se_applicability_products.nc` | 便于 xarray/NCL 读取的全部二维诊断场。 |
+| `se_applicability_products.npz` | 与 NetCDF 对应的压缩 NumPy 产品；始终写出。 |
+| `se_applicability_summary.json` | 输入文件、中心、时次、面积比例、强迫重合比例、最大强迫位置和输出路径。 |
+
+关键变量：
+
+| 变量 | 含义 |
+|:---|:---|
+| `I2_raw_ctrl`, `I2_raw_jet` | CTRL/JET 实际 CM1 方位平均基本态的广义惯性稳定度。 |
+| `D_raw_ctrl`, `D_raw_jet` | CTRL/JET 未正则化 Bui 判别式。 |
+| `I2_balanced_projection_*`, `D_balanced_projection_*` | 热成风平衡投影后的未正则化场。 |
+| `I2_regularized_*`, `D_regularized_*` | 正则化比较场，不得当作原始模拟稳定性。 |
+| `F_lambda_env` | `F_lambda_eddy(JET)-F_lambda_eddy(CTRL)`。 |
+| `F_lambda_env_radial`, `F_lambda_env_vertical` | 环境 eddy 动量强迫的径向、垂直通量散度贡献。 |
+| `F_lambda_env_ctrl_raw_elliptic` | 只保留实际 CTRL 原始椭圆区内的环境强迫。 |
+| `F_lambda_env_ctrl_balanced_projection_elliptic` | 只保留 CTRL 平衡投影椭圆区内的环境强迫。 |
+| `I2_vorticity_component_raw_*` | (I^2) 中 `chi*xi*(zeta+f)` 的贡献。 |
+| `I2_baroclinic_component_raw_*` | (I^2) 中 `Cg*dchi/dr` 的贡献。 |
+| `D_static_inertial_product_raw_*` | 判别式的 `K1*I2` 正/负贡献。 |
+| `D_shear_penalty_raw_*` | 判别式中始终被减去的切变平方项。 |
+| `stability_class_*` | 上述四类稳定性编码。 |
+| `regularization_changed_mask_*` | 哪些格点被正则化修改。 |
+| `outflow_jet` | JET 方位平均径向风。 |
+| `eddy_speed_jet` | `sqrt(2*EKE)` 急流/非对称风速代理。 |
+
+JSON 中最关键的量是：
+
+- `nonelliptic_abs_forcing_fraction`：按柱坐标体积权重，
+  `abs(F_lambda_env)` 位于非椭圆区的比例；
+- `strong_forcing_nonelliptic_area_fraction`：最强 10% 非零环境强迫区中，
+  非椭圆区域的比例；
+- `maximum_abs_environmental_forcing`：最大绝对强迫点的位置，以及该点 CTRL/JET
+  的原始和平衡投影 `I2,D`。
+
+### 13.6 稳定性检查后运行环境 SE 响应
+
+若 CTRL 目标区的原始/平衡投影满足椭圆条件，可以继续运行：
+
+```bash
+python scripts/run_se_pipeline.py \
+  --mode env \
+  --input-file /path/to/CTRL/cm1out.nc \
+  --jet-input-file /path/to/JET/cm1out.nc \
+  --target-time-hours 72 \
+  --eddy-average reynolds \
+  --bui-baroclinic-scale 1.0 \
+  --dr-km 12 \
+  --max-r-km 1200 \
+  --max-z-km 20 \
+  --output-dir output/se_environmental/72h
+```
+
+`env` 模式使用固定 CTRL operator 求解 `F_lambda_env` 的 balanced response。
+即使正则化后求解成功，位于原始 `D_raw<=0` 区的结果仍只能解释为修改后
+邻近平衡态的 balanced component，不能替代 CM1 中真实的惯性/对称不稳定动力过程。
+

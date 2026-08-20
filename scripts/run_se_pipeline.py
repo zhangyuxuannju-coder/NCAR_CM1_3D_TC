@@ -3,7 +3,7 @@
 Sawyer-Eliassen (SE) 方程诊断流水线 — 统一入口。
 
 完整的命令行接口，支持 README_SE_pipeline.md 中记录的所有参数。
-三种模式: single（默认）、evap（蒸发冷却）、timeavg（时间段平均）。
+五种模式: single、evap、timeavg、env 和 stability（原始 I2/D 适用性诊断）。
 
 用法:
   python scripts/run_se_pipeline.py --target-time-hours 72 --output-dir output/se_pipeline/72h
@@ -39,15 +39,20 @@ def build_parser() -> argparse.ArgumentParser:
   python scripts/run_se_pipeline.py --target-time-hours 72 --sor-omega 1.5 --sor-tol 1.5e-9
   python scripts/run_se_pipeline.py --mode evap --target-time-hours 72 --evap-q0 -2e-4
   python scripts/run_se_pipeline.py --mode timeavg --time-avg-start-hours 64 --time-avg-end-hours 72
+  python scripts/run_se_pipeline.py --mode stability --input-file CTRL.nc --jet-input-file JET.nc --target-time-hours 72
 """)
 
     # ===== 模式 =====
-    p.add_argument("--mode", choices=["single","evap","timeavg"], default="single",
-                   help="运行模式 (默认 single)")
+    p.add_argument("--mode", choices=["single","evap","timeavg","env","stability"], default="single",
+                   help="运行模式；stability只诊断未正则化I2/D，不求解SE方程")
 
     # ===== 路径 =====
     p.add_argument("--input-file", default="dataset/cm1out.nc", help="输入 NC 文件")
     p.add_argument("--output-dir", default="output/se_pipeline", help="输出目录")
+    p.add_argument("--jet-input-file", default="",
+                   help="env mode JET experiment NC file; --input-file is CTRL")
+    p.add_argument("--eddy-average", choices=["reynolds", "favre"], default="reynolds",
+                   help="eddy decomposition: reynolds matches Bui; favre is a mass-weighted extension")
 
     # ===== 时间 =====
     p.add_argument("--time-index", type=int, default=0)
@@ -84,6 +89,18 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--sor-verbose-every", type=int, default=500)
     p.add_argument("--baroclinic-scale", type=float, default=0.4,
                    help="NCL式斜压项缩放因子 (0.4 以增强椭圆性)")
+    p.add_argument("--bui-baroclinic-scale", type=float, default=1.0,
+                   help="Bui baroclinic coefficient for env mode (physical value: 1.0)")
+    p.add_argument("--stability-outflow-threshold", type=float, default=2.0,
+                   help="stability图中JET方位平均径向出流等值线 (m/s)")
+    p.add_argument("--stability-jet-speed-threshold", type=float, default=20.0,
+                   help="stability图中sqrt(2*EKE)急流/非对称风速代理等值线 (m/s)")
+    p.add_argument("--stability-forcing-percentile", type=float, default=90.0,
+                   help="I2/D图叠加|F_lambda_env|等值线的百分位")
+    p.add_argument("--stability-jet-axis-r-km", type=float, default=None,
+                   help="可选：相对TC中心的imposed jet轴半径，用星号标出")
+    p.add_argument("--stability-jet-axis-z-km", type=float, default=None,
+                   help="可选：imposed jet轴高度，用星号标出")
 
     # ===== 源项 =====
     p.add_argument("--q-override-file", default="", help="外部热力源二维场 (.npy/.npz/.nc)")
@@ -183,6 +200,7 @@ def _run_single(args):
         q_override_file=args.q_override_file,
         fnu_override_file=args.fnu_override_file,
         q_constant=args.q_constant, fnu_constant=args.fnu_constant,
+        eddy_average=args.eddy_average,
         source_mask=mask_cfg,
     )
     run_pipeline(cfg)
@@ -229,6 +247,7 @@ def _run_evap(args):
         q_override_file=args.q_override_file,
         fnu_override_file=args.fnu_override_file,
         q_constant=args.q_constant, fnu_constant=args.fnu_constant,
+        eddy_average=args.eddy_average,
         source_mask=mask_cfg,
         evap_cooling_q0=args.evap_q0, evap_r_center=args.evap_r_center,
         evap_z_center=args.evap_z_center, evap_r_half=args.evap_r_half,
@@ -282,9 +301,20 @@ def _run_timeavg(args):
         q_override_file=args.q_override_file,
         fnu_override_file=args.fnu_override_file,
         q_constant=args.q_constant, fnu_constant=args.fnu_constant,
+        eddy_average=args.eddy_average,
         source_mask=mask_cfg,
     )
     run_pipeline(cfg)
+
+
+def _run_env(args):
+    from src.environmental_cli import run_from_args
+    run_from_args(args)
+
+
+def _run_stability(args):
+    from src.stability_cli import run_from_args
+    run_from_args(args)
 
 
 def main() -> None:
@@ -297,6 +327,10 @@ def main() -> None:
         _run_evap(args)
     elif args.mode == "timeavg":
         _run_timeavg(args)
+    elif args.mode == "env":
+        _run_env(args)
+    elif args.mode == "stability":
+        _run_stability(args)
     else:
         raise ValueError(f"Unknown mode: {args.mode}")
 
