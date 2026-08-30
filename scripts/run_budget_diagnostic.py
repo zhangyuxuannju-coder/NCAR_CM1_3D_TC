@@ -30,7 +30,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="CM1 柱坐标方位角平均与 mean/eddy 动量诊断"
     )
-    parser.add_argument("--input", default="dataset/cm1out.nc", help="输入 NC 文件")
+    parser.add_argument("--input", default="/data/zhangyx/DATA/cm1out_Morrison.nc", help="输入 NC 文件")
     parser.add_argument(
         "--output", default="dataset/typhoon_azimuthal_avg_budget.nc",
         help="输出 NC 文件"

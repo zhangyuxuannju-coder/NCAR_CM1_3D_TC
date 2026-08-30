@@ -61,6 +61,52 @@ class EnvironmentalEddyTests(unittest.TestCase):
             environmental_difference(jet, ctrl), np.array([[2.0, 3.0]])
         )
 
+    def test_reynolds_flux_retains_density_inside_covariance(self):
+        z = np.array([0.0, 1000.0, 2000.0])
+        r = np.array([1000.0])
+        bins = np.zeros(4, dtype=int)
+        valid = np.ones(4, dtype=bool)
+        ur_1d = np.array([1.0, -1.0, 1.0, -1.0])
+        ut_1d = np.array([1.0, 1.0, -1.0, -1.0])
+        rho_1d = np.array([2.0, 1.0, 1.0, 2.0])
+        ur = np.broadcast_to(ur_1d, (z.size, 1, ur_1d.size)).copy()
+        ut = np.broadcast_to(ut_1d, ur.shape).copy()
+        rho = np.broadcast_to(rho_1d, ur.shape).copy()
+        result = diagnose_eddy_momentum_forcing(
+            ur, ut, np.zeros_like(ur), rho, bins, valid, 1, r, z,
+            averaging="reynolds",
+        )
+        np.testing.assert_allclose(result["radial_mass_flux"], 0.5, atol=1.0e-12)
+
+    def test_pure_two_dimensional_zonal_jet_has_zero_ring_mean_torque(self):
+        nphi = 720
+        phi = np.linspace(0.0, 2.0 * np.pi, nphi, endpoint=False)
+        r = np.array([800.0e3, 888.0e3, 1000.0e3])
+        z = np.array([10.0e3, 12.0e3, 14.0e3])
+        bins = np.repeat(np.arange(r.size), nphi)
+        phi_all = np.tile(phi, r.size)
+        r_all = np.repeat(r, nphi)
+        y_all = r_all * np.sin(phi_all)
+        jet_horizontal = 45.0 * np.exp(-((y_all - 888.0e3) / 444.0e3) ** 2)
+        jet_vertical = np.exp(-((z - 12.0e3) / 2.0e3) ** 2)
+        cart_u = jet_vertical[:, None] * jet_horizontal[None, :]
+        ur = (cart_u * np.cos(phi_all)[None, :])[:, None, :]
+        ut = (-cart_u * np.sin(phi_all)[None, :])[:, None, :]
+        result = diagnose_eddy_momentum_forcing(
+            ur,
+            ut,
+            np.zeros_like(ur),
+            np.ones_like(ur),
+            bins,
+            np.ones(bins.size, dtype=bool),
+            r.size,
+            r,
+            z,
+            averaging="reynolds",
+        )
+        np.testing.assert_allclose(result["radial_mass_flux"], 0.0, atol=1.0e-10)
+        np.testing.assert_allclose(result["F_lambda_eddy"], 0.0, atol=1.0e-15)
+
 
 if __name__ == "__main__":
     unittest.main()

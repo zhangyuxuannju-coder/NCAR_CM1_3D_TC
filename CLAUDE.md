@@ -15,7 +15,7 @@
 - **GPU 库**：PyTorch 2.12.1+cu130（通过 NJU 镜像安装），CUDA 驱动 13.2
 - **CM1 编译**：gfortran + OpenMP
 - **模型配置**：`code/namelist.input`，探空文件 `code/input_sounding`
-- **数据目录**：`dataset/`（不进入 Git）；输入数据：`/data1/home/zhangyx/data/cm1out_Thompson.nc`
+- **数据目录**：`/data/zhangyx/DATA/`；默认输入：`/data/zhangyx/DATA/cm1out_Morrison.nc`；`dataset/cm1out.nc` 仅为兼容软链接
 - **输出目录**：`output/`（不进入 Git）
 
 ### JupyterLab 远程开发环境

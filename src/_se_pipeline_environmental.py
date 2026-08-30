@@ -148,6 +148,91 @@ def _plot_environmental_forcing_components(
     plt.close(fig)
 
 
+def _plot_rhs_decomposition(
+    out_file: Path,
+    r_km: np.ndarray,
+    z_km: np.ndarray,
+    thermal_ctrl: np.ndarray,
+    momentum_ctrl: np.ndarray,
+    environmental: np.ndarray,
+    total_with_environment: np.ndarray,
+) -> None:
+    """Plot the traditional two RHS terms plus the isolated environment term."""
+    rr, zz = np.meshgrid(r_km, z_km)
+    fields = (thermal_ctrl, momentum_ctrl, environmental, total_with_environment)
+    titles = (
+        r"CTRL thermal $S_Q$",
+        r"CTRL momentum $S_M$",
+        r"extra environmental $S_{env}$",
+        r"$S_Q+S_M+S_{env}$",
+    )
+    fig, axes = plt.subplots(2, 2, figsize=(13, 9), constrained_layout=True, sharex=True, sharey=True)
+    for ax, field, title in zip(axes.flat, fields, titles):
+        finite = np.asarray(field)[np.isfinite(field)]
+        vmax = float(np.nanpercentile(np.abs(finite), 99.0)) if finite.size else 1.0
+        vmax = max(vmax, 1.0e-30)
+        levels = np.linspace(-vmax, vmax, 25)
+        im = ax.contourf(rr, zz, field, levels=levels, cmap="RdBu_r", extend="both")
+        ax.set_title(title)
+        ax.set_xlabel("Radius (km)")
+        ax.set_ylabel("Height (km)")
+        fig.colorbar(im, ax=ax, pad=0.02)
+    fig.savefig(out_file, dpi=180)
+    plt.close(fig)
+
+
+def _plot_jet_activity_vs_torque(
+    out_file: Path,
+    r_km: np.ndarray,
+    z_km: np.ndarray,
+    eddy_speed_jet: np.ndarray,
+    eddy_speed_env: np.ndarray,
+    f_env: np.ndarray,
+    rhs_env: np.ndarray,
+    outer_zoom: bool = False,
+) -> None:
+    """Separate large non-axisymmetric wind amplitude from SE-eligible torque."""
+    use_r = np.ones(r_km.size, dtype=bool)
+    use_z = np.ones(z_km.size, dtype=bool)
+    if outer_zoom:
+        use_r = r_km >= 0.5 * float(np.nanmax(r_km))
+        use_z = (z_km >= 8.0) & (z_km <= 18.0)
+    r_show = r_km[use_r]
+    z_show = z_km[use_z]
+    rr, zz = np.meshgrid(r_show, z_show)
+    fields = (
+        eddy_speed_jet[np.ix_(use_z, use_r)],
+        eddy_speed_env[np.ix_(use_z, use_r)],
+        f_env[np.ix_(use_z, use_r)],
+        rhs_env[np.ix_(use_z, use_r)],
+    )
+    titles = (
+        r"JET non-axisymmetric speed $\sqrt{2EKE}$",
+        r"JET$-$CTRL non-axisymmetric speed",
+        r"SE-eligible $F_{\lambda,env}$",
+        r"$S_{env}=-\partial_z(\chi\xi F_{\lambda,env})$",
+    )
+    fig, axes = plt.subplots(2, 2, figsize=(13, 9), constrained_layout=True, sharex=True, sharey=True)
+    for index, (ax, field, title) in enumerate(zip(axes.flat, fields, titles)):
+        finite = np.asarray(field)[np.isfinite(field)]
+        if index == 0:
+            vmax = float(np.nanpercentile(finite, 99.0)) if finite.size else 1.0
+            levels = np.linspace(0.0, max(vmax, 1.0e-20), 25)
+            cmap = "viridis"
+        else:
+            vmax = float(np.nanpercentile(np.abs(finite), 99.0)) if finite.size else 1.0
+            vmax = max(vmax, 1.0e-30)
+            levels = np.linspace(-vmax, vmax, 25)
+            cmap = "RdBu_r"
+        im = ax.contourf(rr, zz, field, levels=levels, cmap=cmap, extend="both")
+        ax.set_title(title)
+        ax.set_xlabel("Radius (km)")
+        ax.set_ylabel("Height (km)")
+        fig.colorbar(im, ax=ax, pad=0.02)
+    fig.savefig(out_file, dpi=180)
+    plt.close(fig)
+
+
 def run_environmental_pipeline(
     ctrl_cfg: PipelineConfig,
     jet_input_file: str,
@@ -182,6 +267,9 @@ def run_environmental_pipeline(
     f_env_vertical = environmental_difference(
         jet["F_lambda_eddy_vertical"], ctrl["F_lambda_eddy_vertical"]
     )
+    eddy_speed_ctrl = np.sqrt(2.0 * np.maximum(ctrl["eddy_kinetic_energy"], 0.0))
+    eddy_speed_jet = np.sqrt(2.0 * np.maximum(jet["eddy_kinetic_energy"], 0.0))
+    eddy_speed_env = eddy_speed_jet - eddy_speed_ctrl
 
     theta_bal, tw_info = invert_balanced_theta(
         ctrl["ut"],
@@ -213,6 +301,7 @@ def run_environmental_pipeline(
     zero = np.zeros_like(f_env)
     env_rhs = build_forcing(basic, zero, f_env, r_m, z_m)
     ctrl_rhs = build_forcing(basic, ctrl["Q"], ctrl["Fnu"], r_m, z_m)
+    forcing_ctrl_plus_env = ctrl_rhs["forcing_total"] + env_rhs["forcing_total"]
 
     print("[INFO] Solving fixed-CTRL operator for environmental forcing")
     psi_env, u_env, w_env = _solve_response(
@@ -236,10 +325,14 @@ def run_environmental_pipeline(
         F_lambda_env=f_env,
         F_lambda_env_radial=f_env_radial,
         F_lambda_env_vertical=f_env_vertical,
+        eddy_speed_ctrl=eddy_speed_ctrl,
+        eddy_speed_jet=eddy_speed_jet,
+        eddy_speed_env=eddy_speed_env,
         forcing_env=env_rhs["forcing_total"],
         forcing_ctrl=ctrl_rhs["forcing_total"],
         forcing_ctrl_thermal=ctrl_rhs["forcing_thermal"],
         forcing_ctrl_momentum=ctrl_rhs["forcing_momentum"],
+        forcing_ctrl_plus_env=forcing_ctrl_plus_env,
         psi_env=psi_env,
         U_env=u_env,
         W_env=w_env,
@@ -260,7 +353,13 @@ def run_environmental_pipeline(
                 "F_lambda_env": (("z", "r"), f_env),
                 "F_lambda_env_radial": (("z", "r"), f_env_radial),
                 "F_lambda_env_vertical": (("z", "r"), f_env_vertical),
+                "eddy_speed_ctrl": (("z", "r"), eddy_speed_ctrl),
+                "eddy_speed_jet": (("z", "r"), eddy_speed_jet),
+                "eddy_speed_env": (("z", "r"), eddy_speed_env),
                 "forcing_env": (("z", "r"), env_rhs["forcing_total"]),
+                "forcing_ctrl_thermal": (("z", "r"), ctrl_rhs["forcing_thermal"]),
+                "forcing_ctrl_momentum": (("z", "r"), ctrl_rhs["forcing_momentum"]),
+                "forcing_ctrl_plus_env": (("z", "r"), forcing_ctrl_plus_env),
                 "psi_env": (("r", "z"), psi_env[:, 1:-1]),
                 "U_env": (("r", "z"), u_env[:, 1:-1]),
                 "W_env": (("r", "z"), w_env[:, 1:-1]),
@@ -294,6 +393,35 @@ def run_environmental_pipeline(
             f_env_radial,
             f_env_vertical,
         )
+        _plot_rhs_decomposition(
+            out_dir / "se_rhs_three_pathway_decomposition.png",
+            r_km,
+            z_km,
+            ctrl_rhs["forcing_thermal"],
+            ctrl_rhs["forcing_momentum"],
+            env_rhs["forcing_total"],
+            forcing_ctrl_plus_env,
+        )
+        _plot_jet_activity_vs_torque(
+            out_dir / "environmental_jet_activity_vs_torque.png",
+            r_km,
+            z_km,
+            eddy_speed_jet,
+            eddy_speed_env,
+            f_env,
+            env_rhs["forcing_total"],
+        )
+        if float(np.nanmax(r_km)) >= 600.0:
+            _plot_jet_activity_vs_torque(
+                out_dir / "environmental_jet_activity_vs_torque_outer_zoom.png",
+                r_km,
+                z_km,
+                eddy_speed_jet,
+                eddy_speed_env,
+                f_env,
+                env_rhs["forcing_total"],
+                outer_zoom=True,
+            )
         _plot_environmental_response(
             out_dir / "se_environmental_eddy_response.png",
             r_km,
@@ -310,6 +438,8 @@ def run_environmental_pipeline(
         "ctrl_input": ctrl_cfg.input_file,
         "jet_input": jet_input_file,
         "environmental_forcing_png": str((out_dir / "environmental_eddy_forcing.png").as_posix()) if ctrl_cfg.plot_solution else "",
+        "rhs_three_pathway_png": str((out_dir / "se_rhs_three_pathway_decomposition.png").as_posix()) if ctrl_cfg.plot_solution else "",
+        "jet_activity_vs_torque_png": str((out_dir / "environmental_jet_activity_vs_torque.png").as_posix()) if ctrl_cfg.plot_solution else "",
         "eddy_average": averaging,
         "F_lambda_env_definition": "JET direct eddy flux convergence minus CTRL",
         "operator_definition": "CTRL fixed operator",

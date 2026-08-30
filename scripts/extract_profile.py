@@ -75,7 +75,7 @@ def profile_along_x(
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="沿 X 轴提取径向剖面")
-    parser.add_argument("--input", default="dataset/cm1out.nc")
+    parser.add_argument("--input", default="/data/zhangyx/DATA/cm1out_Morrison.nc")
     parser.add_argument("--time", type=int, default=400, help="时间索引")
     parser.add_argument("--zh", type=float, default=2.0, help="目标高度 (km)")
     parser.add_argument("--prs-var", default="prs")

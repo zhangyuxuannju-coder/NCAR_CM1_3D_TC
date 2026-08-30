@@ -23,7 +23,7 @@ from src.plotting import plot_centers_3d
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="台风中心 3D 轨迹图")
-    parser.add_argument("--input", default="dataset/cm1out.nc")
+    parser.add_argument("--input", default="/data/zhangyx/DATA/cm1out_Morrison.nc")
     parser.add_argument("--time", type=float, default=400)
     parser.add_argument("--z-min", type=float, default=0.5)
     parser.add_argument("--z-max", type=float, default=20.0)

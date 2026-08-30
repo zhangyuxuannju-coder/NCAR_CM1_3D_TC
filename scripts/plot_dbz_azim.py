@@ -20,7 +20,7 @@ from pathlib import Path
 # ═══════════════════════════════════════════════════════════════
 # 配置
 # ═══════════════════════════════════════════════════════════════
-INPUT_FILE = "/data1/home/zhangyx/data/cm1out_thompson.nc"
+INPUT_FILE = "/data/zhangyx/DATA/cm1out_thompson.nc"
 OUTPUT_DIR = Path("output/figures")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 

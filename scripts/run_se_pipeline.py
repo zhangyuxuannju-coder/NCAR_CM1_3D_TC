@@ -47,7 +47,7 @@ def build_parser() -> argparse.ArgumentParser:
                    help="运行模式；stability只诊断未正则化I2/D，不求解SE方程")
 
     # ===== 路径 =====
-    p.add_argument("--input-file", default="dataset/cm1out.nc", help="输入 NC 文件")
+    p.add_argument("--input-file", default="/data/zhangyx/DATA/cm1out_Morrison.nc", help="输入 NC 文件")
     p.add_argument("--output-dir", default="output/se_pipeline", help="输出目录")
     p.add_argument("--jet-input-file", default="",
                    help="env mode JET experiment NC file; --input-file is CTRL")

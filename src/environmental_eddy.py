@@ -12,10 +12,11 @@ velocity ``w``, the diagnosed acceleration is
     F_lambda,eddy = -1/(rho_bar r^2) d[r^2 <rho u'' v''>]/dr
                     -1/rho_bar d[<rho w'' v''>]/dz,
 
-where double primes denote departures from the selected azimuthal mean.  The
-Favre form is conservative for compressible flow; Reynolds averaging matches
-the prime convention used by Bui et al. (2009).  The corresponding eddy heat
-forcing is
+where double primes denote departures from the selected azimuthal mean.  For
+Reynolds averaging the primes are ordinary azimuthal departures but density
+remains inside the diagnosed mass flux.  The Favre form is conservative for
+compressible flow; Reynolds averaging matches the prime convention used by
+Bui et al. (2009).  The corresponding eddy heat forcing is
 
     Q_eddy = -1/(rho_bar r) d[r <rho u'' theta''>]/dr
              -1/rho_bar d[<rho w'' theta''>]/dz.
@@ -245,10 +246,16 @@ def diagnose_eddy_momentum_forcing(
             nr,
         ) / rho_safe
     else:
-        uv_cov = _bin_mean(ur_prime * ut_prime, bin_index_1d, valid_mask_1d, nr)
-        wv_cov = _bin_mean(w_prime * ut_prime, bin_index_1d, valid_mask_1d, nr)
-        flux_r_mass = rho_bar * uv_cov
-        flux_z_mass = rho_bar * wv_cov
+        # Keep density inside the Reynolds covariance.  The previous
+        # rho_bar*<u'v'> approximation contradicted the documented
+        # <rho u'v'> flux and discarded azimuthal density--eddy correlations,
+        # which matter for a thermally balanced environmental jet.
+        flux_r_mass = _bin_mean(
+            rho * ur_prime * ut_prime, bin_index_1d, valid_mask_1d, nr
+        )
+        flux_z_mass = _bin_mean(
+            rho * w_prime * ut_prime, bin_index_1d, valid_mask_1d, nr
+        )
         eddy_kinetic_energy = 0.5 * _bin_mean(
             ur_prime**2 + ut_prime**2 + w_prime**2,
             bin_index_1d,
@@ -281,11 +288,11 @@ def diagnose_eddy_momentum_forcing(
                 rho * w_prime * theta_prime, bin_index_1d, valid_mask_1d, nr
             )
         else:
-            heat_flux_r = rho_bar * _bin_mean(
-                ur_prime * theta_prime, bin_index_1d, valid_mask_1d, nr
+            heat_flux_r = _bin_mean(
+                rho * ur_prime * theta_prime, bin_index_1d, valid_mask_1d, nr
             )
-            heat_flux_z = rho_bar * _bin_mean(
-                w_prime * theta_prime, bin_index_1d, valid_mask_1d, nr
+            heat_flux_z = _bin_mean(
+                rho * w_prime * theta_prime, bin_index_1d, valid_mask_1d, nr
             )
         heat = eddy_scalar_flux_divergence(
             rho_bar, heat_flux_r, heat_flux_z, r_m, z_m

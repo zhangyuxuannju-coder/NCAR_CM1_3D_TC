@@ -53,7 +53,7 @@ def track_all_times(
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="台风中心批量追踪")
-    parser.add_argument("--input", default="dataset/cm1out.nc", help="输入 NC 文件")
+    parser.add_argument("--input", default="/data/zhangyx/DATA/cm1out_Morrison.nc", help="输入 NC 文件")
     parser.add_argument("--output", default=None, help="输出 CSV 文件")
     parser.add_argument("--var", default="psfc", help="用于定位的变量名")
     parser.add_argument("--center-method", choices=["min", "centroid", "streamfunction"],

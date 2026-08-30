@@ -1,0 +1,75 @@
+metadata:
+  purpose: Separate negative ventilation/shear from positive jet pathways
+  interpretation: Two deterministic runs show mechanism consistency, not general causality
+  fixed:
+    - initial_vortex
+    - coriolis_parameter
+    - sea_surface_temperature
+    - environmental_humidity
+    - grid_and_physics
+    - output_schedule
+  required_output_interval_hours: 1
+  required_fields:
+    - u
+    - v
+    - w
+    - th
+    - prs
+    - rho
+    - qv
+    - hydrometeors
+    - psfc
+    - ub_*
+    - vb_*
+    - wb_*
+    - ptb_*
+
+factorial_2x2:
+  - id: CTRL
+    shear: false
+    upper_dynamical_anomaly: false
+  - id: SHEAR
+    shear: true
+    upper_dynamical_anomaly: false
+    construction: Balanced broad vertical-shear profile matched to FULL local 850-200-hPa VWS
+  - id: UPPER
+    shear: false
+    upper_dynamical_anomaly: true
+    construction: Balanced upper-level angular-momentum/PV anomaly with local VWS matched to CTRL
+  - id: FULL
+    shear: true
+    upper_dynamical_anomaly: true
+    construction: Existing balanced westerly jet
+
+factorial_effects:
+  shear: SHEAR_minus_CTRL
+  upper: UPPER_minus_CTRL
+  interaction: FULL_minus_SHEAR_minus_UPPER_plus_CTRL
+
+matched_jet_sweep:
+  distances_km: [600, 800, 1000, 1200, 1500]
+  peak_speeds_m_s: [15, 30, 45]
+  placements: [cyclonic_shear_side, anticyclonic_shear_side]
+  selection_rules:
+    iso_vws_pair:
+      vws_tolerance_m_s: 1.0
+      require_different_upper_i2: true
+    iso_upper_i2_pair:
+      relative_i2_tolerance: 0.05
+      require_different_vws: true
+
+ensemble:
+  recommended_members: 5
+  minimum_members: 3
+  perturbation: Small zero-mean moisture or thermal perturbations using recorded random seeds
+
+acceptance:
+  positive_pathway:
+    lead_hours: [6, 24]
+    must_survive_intensity_and_rmw_matching: true
+    must_match_budget_sign_and_location: true
+    must_be_robust_to_windows_and_se_regularization: true
+  se_regularization_eps: [1.0e-5, 1.0e-4, 1.0e-3]
+  energetics:
+    maximum_mass_closure_ratio: 0.10
+    maximum_first_law_relative_residual: 0.20

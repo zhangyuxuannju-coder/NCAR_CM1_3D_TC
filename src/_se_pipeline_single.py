@@ -780,10 +780,13 @@ def build_se_diagnostic_fields(
     ct_gradwind = vt**2 / r_safe[None, :] + f * vt
 
     rv = vt * r_safe[None, :]
-    zeta_abs = _safe_gradient(rv, r_m, axis=1) / r_safe[None, :]
-    zeta = zeta_abs - f
+    # Axisymmetric relative vorticity and its absolute counterpart.  The old
+    # code named the relative-vorticity expression ``zeta_abs`` and then
+    # subtracted f, accidentally removing f from inertial stability.
+    zeta = _safe_gradient(rv, r_m, axis=1) / r_safe[None, :]
+    zeta_abs = zeta + f
     xi = f + 2.0 * vt / r_safe[None, :]
-    inertial_stability = xi * (zeta + f)
+    inertial_stability = xi * zeta_abs
 
     return {
         "chi": chi,
@@ -791,6 +794,8 @@ def build_se_diagnostic_fields(
         "ct": ct_gradwind,
         "xi": xi,
         "zeta": zeta,
+        "zeta_abs": zeta_abs,
+        "f": float(f),
         "inertial_stability": inertial_stability,
         "rho": rho,
         "Q": np.asarray(q_2d, dtype=np.float64),
@@ -889,10 +894,11 @@ def regularize_inertial_stability_for_ellipticity(
     C = fields["C"]
     xi = fields["xi"]
     zeta = fields["zeta"]
-    f_cor = 5e-5
+    f_cor = float(fields.get("f", 5.0e-5))
 
-    # NCL式涡度底板: vor >= fc*f (fc=0.01), 确保惯性稳定度为正
-    zeta_reg = np.maximum(zeta, 0.01 * f_cor)
+    # Apply the floor to absolute, not relative, vorticity.
+    zeta_abs = np.asarray(fields.get("zeta_abs", zeta + f_cor))
+    zeta_abs_reg = np.maximum(zeta_abs, 0.01 * abs(f_cor))
 
     chi_r = _safe_gradient(chi, r_m, axis=1)
     chi_z = _safe_gradient(chi, z_m, axis=0)
@@ -907,12 +913,12 @@ def regularize_inertial_stability_for_ellipticity(
 
     K1_reg = np.maximum(K1, 1.0e-10) * sponge_2d
 
-    # NCL式K3: I2 = chi * xi * (zeta_reg + f_cor) + ct * chi_r
+    # NCL式K3: I2 = chi * xi * zeta_abs_reg + ct * chi_r
     if "ct" in fields:
         ct_field = fields["ct"]
-        I2 = chi * xi * (zeta_reg + f_cor) + ct_field * chi_r
+        I2 = chi * xi * zeta_abs_reg + ct_field * chi_r
     else:
-        I2 = chi * xi * (zeta_reg + f_cor) + C * chi_r
+        I2 = chi * xi * zeta_abs_reg + C * chi_r
 
     I2_max = float(np.nanmax(np.abs(I2)))
     small_pos = I2_max * 1e-3
@@ -1752,7 +1758,7 @@ def _source_mask_from_json(text_or_path: Optional[str]) -> SourceMaskConfig:
 
 def parse_args() -> PipelineConfig:
     p = argparse.ArgumentParser(description="SE 诊断全流程: 3D场 -> 方位平均 -> 热成风反算 -> 六系数 -> 正则化 -> SE求解")
-    p.add_argument("--input-file", default="dataset/cm1out.nc")
+    p.add_argument("--input-file", default="/data/zhangyx/DATA/cm1out_Morrison.nc")
     p.add_argument("--output-dir", default="se_pipeline_output")
     p.add_argument("--time-index", type=int, default=0)
     p.add_argument("--target-time-seconds", type=float, default=None, help="按time坐标秒值选取最近时次，例如172800")

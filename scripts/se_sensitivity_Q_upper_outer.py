@@ -49,12 +49,12 @@ PRODUCTS_FILE = (
     "/data1/home/zhangyx/project/refactor/output/se_pipeline/thompson/"
     "se_pipeline_products.npz"
 )
-OUTPUT_DIR = Path("output/figures/se_Q_sensitivity")
+OUTPUT_DIR = Path("output/figures/se_Q_sensitivity_r50_200")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 # ── 目标区域 ──
 Z_MIN, Z_MAX = 10.0, 17.5   # km
-R_MIN = 50.0                 # km
+R_MIN, R_MAX = 50.0, 200.0  # km
 
 # ── 平滑参数 ──
 Z_TAPER = 0.5     # km,  垂直过渡半宽度 (tanh参数, 2*delta≈2.5dz, 保证中心区>0.95)
@@ -126,7 +126,7 @@ def repair_nan_2d(field: np.ndarray) -> np.ndarray:
 
 def build_tanh_taper(
     r_m: np.ndarray, z_m: np.ndarray,
-    z_min: float, z_max: float, r_min: float,
+    z_min: float, z_max: float, r_min: float, r_max: float,
     delta_z: float, delta_r: float,
 ) -> np.ndarray:
     """
@@ -136,9 +136,10 @@ def build_tanh_taper(
       - 垂直方向: 在 z=z_min 和 z=z_max 处各有一个 tanh 过渡
         w_lower(z) = 0.5 * (1 + tanh((z - z_min) / delta_z))
         w_upper(z) = 0.5 * (1 + tanh((z_max - z) / delta_z))
-      - 径向方向: 在 r=r_min 处有一个 tanh 过渡
-        w_radial(r) = 0.5 * (1 + tanh((r - r_min) / delta_r))
-      - 总权重 = w_lower * w_upper * w_radial
+      - 径向方向: 在 r=r_min 和 r=r_max 处各有一个 tanh 过渡
+        w_radial_lower(r) = 0.5 * (1 + tanh((r - r_min) / delta_r))
+        w_radial_upper(r) = 0.5 * (1 + tanh((r_max - r) / delta_r))
+      - 总权重 = w_lower * w_upper * w_radial_lower * w_radial_upper
 
     tanh 函数特性:
       - tanh(0) = 0        → 权重 = 0.5 在边界上
@@ -161,9 +162,10 @@ def build_tanh_taper(
 
     z_lower = 0.5 * (1.0 + np.tanh((Zg - z_min) / delta_z))
     z_upper = 0.5 * (1.0 + np.tanh((z_max - Zg) / delta_z))
-    r_edge  = 0.5 * (1.0 + np.tanh((Rg - r_min) / delta_r))
+    r_lower = 0.5 * (1.0 + np.tanh((Rg - r_min) / delta_r))
+    r_upper = 0.5 * (1.0 + np.tanh((r_max - Rg) / delta_r))
 
-    taper = z_lower * z_upper * r_edge
+    taper = z_lower * z_upper * r_lower * r_upper
     return np.clip(taper, 0.0, 1.0)
 
 
@@ -231,7 +233,8 @@ def main():
     print("\n[3/5] 构建平滑 taper...")
     taper = build_tanh_taper(
         r_m, z_m,
-        z_min=Z_MIN * 1000.0, z_max=Z_MAX * 1000.0, r_min=R_MIN * 1000.0,
+        z_min=Z_MIN * 1000.0, z_max=Z_MAX * 1000.0,
+        r_min=R_MIN * 1000.0, r_max=R_MAX * 1000.0,
         delta_z=Z_TAPER * 1000.0,
         delta_r=R_TAPER * 1000.0,
     )
@@ -365,11 +368,12 @@ def main():
             ax.contour(R, Z, ut_2d, levels=np.arange(0, 101, 20),
                        colors='green', alpha=0.45, linewidths=0.6, linestyles='dashed')
             # 标注修改区域
-            ax.fill_between([R_MIN, r_km[-1]], Z_MIN, Z_MAX,
+            ax.fill_between([R_MIN, R_MAX], Z_MIN, Z_MAX,
                             alpha=0.06, color='yellow')
             ax.axhline(y=Z_MIN, color='orange', alpha=0.4, linestyle='--', linewidth=0.6)
             ax.axhline(y=Z_MAX, color='orange', alpha=0.4, linestyle='--', linewidth=0.6)
             ax.axvline(x=R_MIN, color='orange', alpha=0.4, linestyle='--', linewidth=0.6)
+            ax.axvline(x=R_MAX, color='orange', alpha=0.4, linestyle='--', linewidth=0.6)
 
             plt.colorbar(im, ax=ax, fraction=0.04, pad=0.02)
             title = f"{label} — {vname} ({unit})"
@@ -385,7 +389,7 @@ def main():
                 ax.set_xlabel("Radius (km)")
 
     fig.suptitle(
-        f"SE Secondary Circulation — Q Sensitivity (z={Z_MIN}–{Z_MAX} km, r>{R_MIN} km)",
+        f"SE Secondary Circulation — Q Sensitivity (z={Z_MIN}–{Z_MAX} km, r={R_MIN}–{R_MAX} km)",
         fontsize=15, fontweight="bold", y=1.01,
     )
     fig.tight_layout()
@@ -406,11 +410,12 @@ def main():
         nm = TwoSlopeNorm(vcenter=0, vmin=-dv, vmax=dv)
         im = ax.contourf(R, Z, dU, levels=lv, cmap="RdBu_r", norm=nm, extend="both")
         ax.contour(R, Z, dU, levels=lv[::4], colors='k', alpha=0.3, linewidths=0.4)
-        ax.fill_between([R_MIN, r_km[-1]], Z_MIN, Z_MAX,
+        ax.fill_between([R_MIN, R_MAX], Z_MIN, Z_MAX,
                         alpha=0.06, color='yellow')
         ax.axhline(y=Z_MIN, color='orange', alpha=0.5, linestyle='--', linewidth=0.8)
         ax.axhline(y=Z_MAX, color='orange', alpha=0.5, linestyle='--', linewidth=0.8)
         ax.axvline(x=R_MIN, color='orange', alpha=0.5, linestyle='--', linewidth=0.8)
+        ax.axvline(x=R_MAX, color='orange', alpha=0.5, linestyle='--', linewidth=0.8)
         plt.colorbar(im, ax=ax, fraction=0.04, pad=0.02)
         pct = int((EXPERIMENTS[label] - 1) * 100)
         ax.set_title(f"ΔU_se: Q {'+' if pct>0 else ''}{pct}% − CTRL", fontsize=12, fontweight="bold")
@@ -440,12 +445,12 @@ def main():
     ax.set_ylabel(f"U_se at z≈{z_km[iz_out]:.2f} km (m/s)", fontsize=12)
     ax.set_title(
         f"Outflow Layer — $U_{{se}}$ at z≈{z_km[iz_out]:.2f} km "
-        f"(r > {R_MIN} km, positive only)",
+        f"(r = {R_MIN}–{R_MAX} km, positive only)",
         fontsize=13, fontweight="bold",
     )
     ax.legend(fontsize=10, ncol=5)
     ax.grid(True, alpha=0.3)
-    ax.set_xlim(R_MIN, r_km[-1] + 5)
+    ax.set_xlim(R_MIN, R_MAX + 5)
     # 仅显示正值范围
     y_pos = np.concatenate([results[l]["U_se"][iz_out, :][mask_r] for l in labels_ordered])
     y_pos = y_pos[y_pos > 0]
@@ -471,12 +476,12 @@ def main():
     ax.set_ylabel(f"U_se at z≈{z_km[iz_in]:.2f} km (m/s)", fontsize=12)
     ax.set_title(
         f"Inflow Layer — $U_{{se}}$ at z≈{z_km[iz_in]:.2f} km "
-        f"(r > {R_MIN} km, 0 ~ −3 m/s)",
+        f"(r = {R_MIN}–{R_MAX} km, 0 ~ −3 m/s)",
         fontsize=13, fontweight="bold",
     )
     ax.legend(fontsize=10, ncol=5)
     ax.grid(True, alpha=0.3)
-    ax.set_xlim(R_MIN, r_km[-1] + 5)
+    ax.set_xlim(R_MIN, R_MAX + 5)
     ax.set_ylim(-3.0, 0.0)
     fig.tight_layout()
     p4 = OUTPUT_DIR / "se_inflow_profile.png"
@@ -489,7 +494,8 @@ def main():
     fig, ax = plt.subplots(figsize=(10, 7), dpi=150)
 
     mod_labels = ["Q_m50", "Q_m20", "Q_p20", "Q_p50"]
-    factors_arr = np.array([EXPERIMENTS[l] for l in mod_labels])  # [0.5, 0.8, 1.2, 1.5]
+    # 加入 CTRL 点让折线穿过 (1.0, 0%)
+    factors_arr = np.array([0.5, 0.8, 1.0, 1.2, 1.5])
     r_targets = [100, 150, 200]
     # 为每个半径选色
     r_colors = {100: "#2196F3", 150: "#4CAF50", 200: "#FF9800"}  # 蓝、绿、橙
@@ -500,24 +506,27 @@ def main():
     for rc in r_targets:
         ir = int(np.argmin(np.abs(r_km - rc)))
 
-        # 出流层: 虚线
+        # 出流层: 虚线 (含 CTRL 0%)
         d_out = []
         for label in mod_labels:
             u_mod = results[label]["U_se"][iz_out, ir]
             u_ref = u_out_ctrl_prof[ir]
             dp = (u_mod - u_ref) / abs(u_ref) * 100
             d_out.append(dp)
+        # 在 factor=1.0 处插入 0%
+        d_out.insert(2, 0.0)
         ax.plot(factors_arr, d_out, 'o--', color=r_colors[rc],
                 linewidth=2.0, markersize=8,
                 label=f"Outflow r={rc} km")
 
-        # 入流层: 实线
+        # 入流层: 实线 (含 CTRL 0%)
         d_in = []
         for label in mod_labels:
             u_mod = results[label]["U_se"][iz_in, ir]
             u_ref = u_in_ctrl_prof[ir]
             dp = (u_mod - u_ref) / abs(u_ref) * 100
             d_in.append(dp)
+        d_in.insert(2, 0.0)
         ax.plot(factors_arr, d_in, 's-', color=r_colors[rc],
                 linewidth=2.0, markersize=8,
                 label=f"Inflow  r={rc} km")
@@ -547,11 +556,11 @@ def main():
     plt.close(fig)
     print(f"  [保存] {p5}")
 
-    # ── 图 6: CTRL Q 热力场 (10–17.5 km, 50–300 km) ──────────
-    print("  绘图 6: CTRL Q 热力场 (z=10–17.5 km, r=50–300 km)...")
+    # ── 图 6: CTRL Q 热力场 (10–17.5 km, 50–200 km) ──────────
+    print("  绘图 6: CTRL Q 热力场 (z=10–17.5 km, r=50–200 km)...")
 
     z_mask = (z_km >= Z_MIN) & (z_km <= Z_MAX)
-    r_mask = (r_km >= R_MIN) & (r_km <= 300.0)
+    r_mask = (r_km >= R_MIN) & (r_km <= R_MAX)
     z_plot = z_km[z_mask]
     r_plot = r_km[r_mask]
     R_plot, Z_plot = np.meshgrid(r_plot, z_plot)
@@ -583,10 +592,10 @@ def main():
     ax.set_xlabel("Radius (km)", fontsize=12)
     ax.set_ylabel("Height (km)", fontsize=12)
     ax.set_title(
-        f"CTRL Diabatic Heating Q  |  z = {Z_MIN}–{Z_MAX} km, r = {R_MIN}–300 km",
+        f"CTRL Diabatic Heating Q  |  z = {Z_MIN}–{Z_MAX} km, r = {R_MIN}–{R_MAX} km",
         fontsize=13, fontweight="bold",
     )
-    ax.set_xlim(R_MIN, 300)
+    ax.set_xlim(R_MIN, R_MAX)
     ax.set_ylim(Z_MIN, Z_MAX)
     ax.set_box_aspect(1.0)
     ax.grid(True, alpha=0.2, linestyle='--')

@@ -40,9 +40,14 @@ pip install numpy scipy xarray netCDF4 matplotlib pyyaml opencv-python
 
 ### 1.2 连接数据
 
+CM1 大体积数据的服务器默认目录为 `/data/zhangyx/DATA`。项目中的默认参数直接读取该目录；`dataset/cm1out.nc` 仅作为 Morrison 个例的兼容入口。
+
 ```bash
-cd refactor
-ln -s ../dataset dataset
+cd /data1/home/zhangyx/project/TC_dynamic
+ln -sfn /data/zhangyx/DATA/cm1out_Morrison.nc dataset/cm1out.nc
+
+# 查看当前默认文件
+readlink -f dataset/cm1out.nc
 ```
 
 项目已配置 `.gitignore`，`dataset/` 和 `output/` 不会被提交到 Git。

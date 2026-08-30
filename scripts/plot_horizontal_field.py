@@ -29,7 +29,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="CM1 水平场绘图工具（单帧/视频）"
     )
-    parser.add_argument("--input", default="dataset/cm1out.nc", help="输入 NC 文件")
+    parser.add_argument("--input", default="/data/zhangyx/DATA/cm1out_Morrison.nc", help="输入 NC 文件")
     parser.add_argument("--var", default="prs", help="变量名")
     parser.add_argument("--zh", type=float, default=1000.0, help="目标高度")
     parser.add_argument("--time", type=float, default=0, help="目标时间")

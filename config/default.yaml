@@ -20,8 +20,8 @@
 # =============================================================================
 paths:
   # --- 输入数据 ---
-  # 建议创建软链接：ln -s ../dataset dataset
-  input_file: "dataset/cm1out.nc"
+  # 大体积 CM1 数据统一存放在 /data；dataset/cm1out.nc 仅保留兼容软链接。
+  input_file: "/data/zhangyx/DATA/cm1out_Morrison.nc"
 
   # --- 输出目录（自动创建） ---
   # 方位角平均 + 动量收支
