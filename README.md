@@ -19,6 +19,7 @@
 11. [常见问题](#11-常见问题)
 12. [从原始代码迁移对照](#12-从原始代码迁移对照)
 13. [JET–CTRL 环境涡动 SE 与适用性诊断](#13-jetctrl-环境涡动-se-诊断)
+14. [强度匹配的 SE 算子与 CTRL 眼墙诊断](#14-强度匹配的-se-算子与-ctrl-眼墙诊断)
 
 ---
 
@@ -884,3 +885,55 @@ python scripts/run_se_pipeline.py \
 即使正则化后求解成功，位于原始 `D_raw<=0` 区的结果仍只能解释为修改后
 邻近平衡态的 balanced component，不能替代 CM1 中真实的惯性/对称不稳定动力过程。
 
+
+
+---
+
+## 14. 强度匹配的 SE 算子与 CTRL 眼墙诊断
+
+### 14.1 算子等效强迫
+
+该流程将JET–CTRL的SE左侧系数差异等效为右端强迫：
+
+~~~text
+S_static     = -d_r(delta_A * w_CTRL)
+S_inertial   =  d_z(delta_I2 * u_CTRL)
+S_baroclinic = -d_r(delta_B * u_CTRL) + d_z(delta_B * w_CTRL)
+~~~
+
+惯性单项求解 `L_CTRL,regularized(psi_I)=S_inertial`。结果是正则化平衡投影，
+不是CM1真实非线性环流，也不能单独证明强度因果关系。
+
+### 14.2 多时次惯性算子诊断
+
+~~~bash
+/data1/home/zhangyx/miniconda3/envs/cm1_tc/bin/python   scripts/plot_inertial_operator_evolution_matched.py   --ctrl /data/zhangyx/DATA/cm1out_25N_nojet.nc   --jet /data/zhangyx/DATA/cm1out_25N_9o_jet_30_15km.nc   --matches-json config/inertial_matches_J70_90_C80_140.json   --max-r-km 1200 --dr-km 12 --max-z-km 20   --mask-radius-km 100 --eps-ratio 1e-5   --jet-axis-r-km 999 --jet-axis-z-km 15   --f 6.1636e-5   --output-dir output/inertial_operator_evolution_25N_9deg_30_15km_J70_90_C80_140
+~~~
+
+主要输出包括惯性强迫图、径向/垂直SE响应、各配对NPZ和 `summary.json`。
+`--mask-radius-km 100` 只屏蔽100 km内的右端强迫，求解域仍保持0–1200 km。
+设为0会重新引入内核强度差，只能作敏感性。
+
+正则化至少比较 `eps_ratio=1e-3,1e-4,1e-5,1e-6`。若响应幅度或符号随正则化
+改变，不得用该解做定量归因。
+
+### 14.3 CTRL突降/眼墙诊断
+
+~~~bash
+sbatch scripts/diagnose_ctrl_eyewall_cycle.sbatch
+~~~
+
+任务读取25N CTRL的66–88 h，输出强度/RMW、低层切向风和反射率时间—半径图、
+水平复合反射率、半径—高度反射率/垂直速度以及客观双峰指标。
+
+当前结果没有持续第二切向风峰，不支持完整眼墙置换。调整基线应先进行集合、
+内区1–1.5 km分辨率、微物理和海洋混合层成对敏感性；不要只提高扩散压制波动。
+
+### 14.4 当前研究边界
+
+现有结果支持“惯性稳定度算子是JET–CTRL差异的优先机制假设”。下一步仍需：
+
+- 同传统热力、切向动量、静力和斜压强迫做统一尺度比较；
+- 检查SE响应与CM1实际环流和强度倾向的符号、空间投影及领先关系；
+- 进行时间平均、正则化和集合稳健性检验；
+- 用jet高度、距离、宽度和强度的CM1敏感性试验建立因果证据。
