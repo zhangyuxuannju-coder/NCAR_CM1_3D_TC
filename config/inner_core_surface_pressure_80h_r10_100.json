@@ -1,0 +1,1 @@
+{"base_config":"config/thompson_240h_se_attribution.json","center_hour":80.0,"half_window_h":3.0,"radius_inner_km":10.0,"radius_km":100.0,"radial_spacing_km":1.5,"n_azimuth":360,"output_dir":"output/inner_core_surface_pressure_tendency_80h_r10_100"}

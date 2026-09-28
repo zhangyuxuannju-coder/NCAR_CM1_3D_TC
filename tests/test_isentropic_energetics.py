@@ -3,7 +3,9 @@ import unittest
 import numpy as np
 
 from src.isentropic_energetics import (
+    assess_cycle_closure,
     build_isentropic_streamfunction,
+    classify_outflow_work_hypothesis,
     equivalent_potential_temperature,
     integrate_thermodynamic_cycle,
     moist_entropy_proxy,
@@ -43,6 +45,31 @@ class IsentropicEnergeticsTests(unittest.TestCase):
         self.assertIn("upper_outflow", result["branches"])
         branch_heat = sum(item["heat_j_kg"] for item in result["branches"].values())
         self.assertAlmostEqual(branch_heat, result["net_tds_j_kg"])
+
+
+    def test_cycle_closure_gate(self):
+        passed = assess_cycle_closure(
+            {"mass_closure_ratio": 0.08, "first_law_relative_residual": 0.14}
+        )
+        self.assertTrue(passed["closure_passed"])
+        failed = assess_cycle_closure(
+            {"mass_closure_ratio": 0.11, "first_law_relative_residual": 0.01}
+        )
+        self.assertEqual(failed["interpretation"], "partial_budget_only")
+
+    def test_outflow_work_classification(self):
+        self.assertEqual(
+            classify_outflow_work_hypothesis([0.01, 0.03], (-0.01, 0.02)),
+            "li_like_negligible",
+        )
+        self.assertEqual(
+            classify_outflow_work_hypothesis([0.08, 0.09], (0.01, 0.03)),
+            "rappin_like_material",
+        )
+        self.assertEqual(
+            classify_outflow_work_hypothesis([0.01, 0.03], None),
+            "insufficient",
+        )
 
 
 if __name__ == "__main__":

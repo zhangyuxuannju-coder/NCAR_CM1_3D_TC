@@ -972,8 +972,18 @@ def solve_se_sparse(
     A: np.ndarray, B: np.ndarray, C: np.ndarray,
     D: np.ndarray, E: np.ndarray, Fin: np.ndarray,
     dr: float, dz: float,
+    *, inner_axis_dirichlet: bool = False,
 ) -> np.ndarray:
-    """scipy稀疏直接求解: 无条件收敛，适用于任何分辨率."""
+    """Sparse direct solve with selectable treatment of the inner radial node.
+
+    By default radial and top ghosts mirror the adjacent interior node, matching
+    the archived solver.  When ``inner_axis_dirichlet`` is true, the first
+    radial node is instead constrained to ``psi=0`` as a minimal approximation
+    to axis regularity.  The outer radial and top conditions remain Neumann and
+    the bottom ghost remains zero.  The first stored node is at half a radial
+    grid interval, so this option is a sensitivity test rather than an exact
+    r=0 discretization.
+    """
     from scipy.sparse import csr_matrix
     from scipy.sparse.linalg import spsolve
 
@@ -990,6 +1000,11 @@ def solve_se_sparse(
     for i in range(nr):
         for j in range(nz):
             k = i * nz + j  # flat index
+
+            if inner_axis_dirichlet and i == 0:
+                rows.append(k); cols.append(k); vals.append(1.0)
+                rhs[k] = 0.0
+                continue
 
             # --- p_xx coefficients ---
             # interior: (P[i+1]+P[i-1]-2P[i])/dr² * A[i,j]
@@ -1012,9 +1027,8 @@ def solve_se_sparse(
                 c0 = -2.0/dz2; c1 = 1.0/dz2
                 rows.extend([k,k]); cols.extend([k,k+1]); vals.extend([c0*C[i,j], c1*C[i,j]])
             elif j == nz-1:
-                # dpsi/dz=0 at top → P[nz+1]=P[nz]
-                # p_yy = (P[nz]+P[nz-1]-2P[nz])/dz² = (P[nz-1]-P[nz])/dz²
-                c0 = -1.0/dz2; c1 = 1.0/dz2
+                # Centered dpsi/dz=0 at last physical node: mirror top ghost.
+                c0 = -2.0/dz2; c1 = 2.0/dz2
                 rows.extend([k,k]); cols.extend([k,k-1]); vals.extend([c0*C[i,j], c1*C[i,j]])
             else:
                 c0 = -2.0/dz2; c1 = 1.0/dz2; c2 = 1.0/dz2
@@ -1027,13 +1041,9 @@ def solve_se_sparse(
                 if 0 <= ri < nr and 0 <= rj < nz:
                     rows.append(k); cols.append(ri*nz+rj)
                     vals.append(sign * B[i,j] / drdz4)
-            if i == 0:
-                _add_xy(i+1, j+1 if j+1<nz else nz-2, 1.0)  # P[1,j+1]
-                _add_xy(i+1, j-1, -1.0)                      # P[1,j-1]
-                # P[-1,...] = P[1,...] via dpsi/dr=0 → +P[1,j+1]-P[1,j-1]-P[1,j+1]+P[1,j-1] = 0 → cancels
-            elif i == nr-1:
-                _add_xy(i-1, j+1 if j+1<nz else nz-2, -1.0)
-                _add_xy(i-1, j-1, 1.0)
+            if i == 0 or i == nr-1 or j == nz-1:
+                # Mirrored radial/top ghosts cancel the mixed derivative.
+                pass
             else:
                 _add_xy(i+1, j+1 if j+1<nz else nz-2, 1.0)
                 _add_xy(i+1, j-1, -1.0)
@@ -1044,9 +1054,7 @@ def solve_se_sparse(
             if i == 0:
                 pass  # dpsi/dr=0 → p_x = 0 at inner boundary
             elif i == nr-1:
-                # one-sided: (P[i]-P[i-1])/(2*dr)
-                rows.extend([k,k]); cols.extend([k,k-nz])
-                vals.extend([D[i,j]/dr2_2, -D[i,j]/dr2_2])
+                pass  # mirrored ghost gives dpsi/dr=0 at outer node
             else:
                 rows.extend([k,k]); cols.extend([k+nz,k-nz])
                 vals.extend([D[i,j]/dr2_2, -D[i,j]/dr2_2])
@@ -1072,7 +1080,7 @@ def solve_se_sparse(
     P = np.zeros((nr, nz + 2), dtype=np.float64)
     P[:, 1:-1] = p_flat.reshape(nr, nz)
     P[:, 0] = 0.0
-    P[:, -1] = P[:, -2]
+    P[:, -1] = P[:, -3]
     return P
 
 
@@ -1218,13 +1226,13 @@ def psi_to_uw(psi: np.ndarray, rho_ext: np.ndarray, r_m: np.ndarray, dr: float, 
         for ir in range(1, nr - 1):
             denom = 2.0 * dr * r_safe[ir] * max(rho_ext[ir, iz], 1.0e-8)
             W[ir, iz] = (psi[ir + 1, iz] - psi[ir - 1, iz]) / denom
-        W[0, iz] = W[1, iz]
-        W[-1, iz] = W[-2, iz]
+        W[0, iz] = 0.0  # radial Neumann psi boundary
+        W[-1, iz] = 0.0
 
     W[:, 0] = 0.0
-    W[:, -1] = 0.0
+    W[:, -1] = W[:, -3]
 
-    for ir in range(1, nr):
+    for ir in range(nr):
         denom0 = dz * r_safe[ir] * 0.5 * (rho_ext[ir, 0] + rho_ext[ir, 1])
         denom1 = dz * r_safe[ir] * 0.5 * (rho_ext[ir, -1] + rho_ext[ir, -2])
         if abs(denom0) > 0:
@@ -1235,7 +1243,6 @@ def psi_to_uw(psi: np.ndarray, rho_ext: np.ndarray, r_m: np.ndarray, dr: float, 
             denom = 2.0 * dz * r_safe[ir] * max(rho_ext[ir, iz], 1.0e-8)
             U[ir, iz] = -(psi[ir, iz + 1] - psi[ir, iz - 1]) / denom
 
-    U[0, :] = 0.0
     return U, W
 
 

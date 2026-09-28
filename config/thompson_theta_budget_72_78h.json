@@ -1,0 +1,23 @@
+{
+  "experiment_id": "thompson_theta_budget_72_78h",
+  "cases": {
+    "CTRL": "/data/zhangyx/DATA/cm1out_25N_CTRL_R2_Thompson_OML100_240h.nc",
+    "JET30": "/data/zhangyx/DATA/cm1out_25N_JET_R2_Thompson_OML100_240h.nc"
+  },
+  "center_file": "output/thompson_240h_se_attribution/baseline/hourly_intensity_baseline.csv",
+  "center_case_map": {"CTRL": "CTRL", "JET30": "JET"},
+  "output_dir": "output/thompson_theta_budget_72_78h",
+  "time_window_h": [72.0, 78.0],
+  "fd_half_step_h": 1.0,
+  "radial_max_km": 300.0,
+  "radial_spacing_km": 3.0,
+  "top_km": 18.0,
+  "n_azimuth": 360,
+  "source_terms": {
+    "TURB": ["ptb_hturb", "ptb_vturb"],
+    "DIFF": ["ptb_hidiff", "ptb_vidiff"],
+    "MOIST": ["ptb_mp", "ptb_div"],
+    "RADIATION": ["ptb_rad"],
+    "RDAMP_AUXILIARY": ["ptb_rdamp"]
+  }
+}

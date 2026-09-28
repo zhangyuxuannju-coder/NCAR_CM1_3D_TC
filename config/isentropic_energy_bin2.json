@@ -1,0 +1,17 @@
+{
+  "output_dir": "output/isentropic_energy_li_fig7_8/sensitivity_bin2",
+  "validation_center_h": 75,
+  "validation_half_window_h": 3,
+  "timeseries_start_h": 24,
+  "timeseries_end_h": 120,
+  "timeseries_step_h": 1,
+  "radius_km": 1000,
+  "theta_min_K": 200,
+  "theta_max_K": 700,
+  "theta_bin_K": 2,
+  "near_surface_m": 1000,
+  "cycle_candidates_kg_s": [
+    -1300000000
+  ],
+  "single_member_time_average": true
+}

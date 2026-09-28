@@ -1,0 +1,36 @@
+{
+  "experiment_id": "thompson_25N_R2_OML100_240h",
+  "cases": {
+    "CTRL": "/data/zhangyx/DATA/cm1out_25N_CTRL_R2_Thompson_OML100_240h.nc",
+    "JET": "/data/zhangyx/DATA/cm1out_25N_JET_R2_Thompson_OML100_240h.nc"
+  },
+  "output_dir": "output/thompson_240h_se_attribution",
+  "coordinate_convention": {
+    "centre": "temporally continuous, smoothed psfc minimum; low-level vorticity centre sensitivity follows",
+    "radial_velocity": "positive outward",
+    "tangential_velocity": "positive cyclonic",
+    "azimuth": "counter-clockwise from east",
+    "averaging": "regular-azimuth interpolation; 360 angles baseline"
+  },
+  "se": {
+    "formulation": "Bui general SE",
+    "f_s-1": 6.2e-05,
+    "radii_km": [0.0, 1200.0],
+    "top_km": 24.0,
+    "radial_spacing_km": 6.0,
+    "vertical_grid": "native non-uniform zh",
+    "boundary_condition": "psi=0 on all finite-domain boundaries",
+    "regularization_eps_ratios": [1e-05, 0.0001, 0.001]
+  },
+  "windows": {
+    "data_derived_pressure_phases": [
+      {"id": "pre_separation", "start_h": 0.0, "end_h": 37.0, "definition": "before a 12-h sustained JET pressure advantage of at least 1 hPa"},
+      {"id": "jet_pressure_advantage", "start_h": 38.0, "end_h": 152.0, "definition": "JET minus CTRL centre pressure is predominantly negative"},
+      {"id": "transition", "start_h": 153.0, "end_h": 156.0, "definition": "sign-changing pressure difference; do not pool with either regime"},
+      {"id": "jet_pressure_disadvantage", "start_h": 157.0, "end_h": 240.0, "definition": "first 12-h sustained JET pressure disadvantage of at least 1 hPa"}
+    ],
+    "smoke_hours": [60.0, 100.0, 150.0, 200.0],
+    "baseline_stride_hours": 3,
+    "transition_lag_hours": [0.0, 3.0, 6.0, 12.0, 24.0]
+  }
+}

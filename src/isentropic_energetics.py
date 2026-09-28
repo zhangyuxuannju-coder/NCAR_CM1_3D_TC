@@ -331,3 +331,43 @@ def integrate_thermodynamic_cycle(
         "branches": branches,
         "segment_labels": labels,
     }
+
+
+
+def assess_cycle_closure(
+    result: Mapping[str, object],
+    mass_threshold: float = 0.10,
+    first_law_threshold: float = 0.15,
+) -> Dict[str, object]:
+    """Apply preregistered closure gates without inventing missing energy terms."""
+    mass = float(result.get("mass_closure_ratio", np.inf))
+    first = float(result.get("first_law_relative_residual", np.inf))
+    passed = bool(np.isfinite(mass) and np.isfinite(first)
+                  and mass <= mass_threshold and first <= first_law_threshold)
+    return {
+        "mass_closure_ratio": mass,
+        "first_law_relative_residual": first,
+        "mass_threshold": float(mass_threshold),
+        "first_law_threshold": float(first_law_threshold),
+        "closure_passed": passed,
+        "interpretation": "complete_cycle_eligible" if passed else "partial_budget_only",
+    }
+
+
+def classify_outflow_work_hypothesis(
+    fractions: Sequence[float],
+    difference_ci: Tuple[float, float] | None = None,
+    threshold: float = 0.05,
+) -> str:
+    """Classify Li-like, Rappin-like, or insufficient energetic evidence."""
+    values = np.asarray(fractions, float)
+    values = values[np.isfinite(values)]
+    if values.size == 0:
+        return "insufficient"
+    ci = (np.nan, np.nan) if difference_ci is None else difference_ci
+    includes_zero = np.isfinite(ci[0]) and np.isfinite(ci[1]) and ci[0] <= 0.0 <= ci[1]
+    if float(np.nanmax(values)) <= threshold and difference_ci is not None and includes_zero:
+        return "li_like_negligible"
+    if float(np.nanmin(values)) > threshold and difference_ci is not None and not includes_zero:
+        return "rappin_like_material"
+    return "insufficient"

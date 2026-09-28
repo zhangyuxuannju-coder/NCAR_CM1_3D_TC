@@ -284,6 +284,85 @@ def lead_lag_correlation(
     return {"lead_h": np.asarray(leads_h, float), "correlation": correlations, "count": counts}
 
 
+def centered_tendency(
+    time_h: np.ndarray, values: np.ndarray, window_h: float, stronger_is_larger: bool = True
+) -> np.ndarray:
+    """Centered finite-window tendency with NaNs at incomplete endpoints."""
+    t = np.asarray(time_h, float)
+    x = np.asarray(values, float)
+    if t.ndim != 1 or x.shape != t.shape or t.size < 1:
+        raise ValueError("time and values must be aligned one-dimensional arrays")
+    if window_h <= 0 or np.any(np.diff(t) <= 0):
+        raise ValueError("window must be positive and time strictly increasing")
+    half = 0.5 * float(window_h)
+    out = np.full_like(x, np.nan, dtype=float)
+    for i, ti in enumerate(t):
+        left = np.where(t <= ti - half + 1.0e-8)[0]
+        right = np.where(t >= ti + half - 1.0e-8)[0]
+        if not left.size or not right.size:
+            continue
+        i0, i1 = int(left[-1]), int(right[0])
+        if np.isfinite(x[i0]) and np.isfinite(x[i1]) and t[i1] > t[i0]:
+            out[i] = (x[i1] - x[i0]) / (t[i1] - t[i0])
+    return out if stronger_is_larger else -out
+
+
+def sustained_sign_transitions(
+    time_h: np.ndarray, values: np.ndarray, minimum_duration_h: float = 4.0
+) -> np.ndarray:
+    """Times where the finite sign changes and the new sign persists."""
+    t = np.asarray(time_h, float)
+    x = np.asarray(values, float)
+    if t.ndim != 1 or x.shape != t.shape:
+        raise ValueError("time and values must be aligned")
+    transitions = []
+    for i in range(1, t.size):
+        if not np.isfinite(x[i - 1]) or not np.isfinite(x[i]) or x[i] == 0:
+            continue
+        if np.sign(x[i]) == np.sign(x[i - 1]):
+            continue
+        use = (t >= t[i]) & (t <= t[i] + minimum_duration_h + 1.0e-8)
+        finite = np.isfinite(x[use])
+        if np.count_nonzero(finite) >= 2 and np.all(np.sign(x[use][finite]) == np.sign(x[i])):
+            transitions.append(t[i])
+    return np.asarray(transitions, float)
+
+
+def moving_block_bootstrap_lead_lag(
+    predictor: np.ndarray,
+    response: np.ndarray,
+    dt_h: float,
+    leads_h: Sequence[float],
+    block_h: float = 6.0,
+    samples: int = 1000,
+    seed: int = 20260831,
+) -> Dict[str, np.ndarray]:
+    """Moving-block bootstrap confidence intervals for lead correlations."""
+    base = lead_lag_correlation(predictor, response, dt_h, leads_h)
+    x = np.asarray(predictor, float)
+    y = np.asarray(response, float)
+    n = x.size
+    block = max(2, int(round(float(block_h) / float(dt_h))))
+    rng = np.random.default_rng(seed)
+    draws = np.full((int(samples), len(leads_h)), np.nan)
+    starts = np.arange(max(n - block + 1, 1))
+    for b in range(int(samples)):
+        pieces = []
+        length = 0
+        while length < n:
+            start = int(rng.choice(starts))
+            piece = np.arange(start, min(start + block, n))
+            pieces.append(piece)
+            length += piece.size
+        index = np.concatenate(pieces)[:n]
+        draws[b] = lead_lag_correlation(x[index], y[index], dt_h, leads_h)["correlation"]
+    base["ci_low"] = np.nanpercentile(draws, 2.5, axis=0)
+    base["ci_high"] = np.nanpercentile(draws, 97.5, axis=0)
+    base["bootstrap_samples"] = np.array(int(samples))
+    base["block_h"] = np.array(float(block_h))
+    return base
+
+
 def identify_intensification_phases(
     time_h: np.ndarray, intensity: np.ndarray, stronger_is_larger: bool = True
 ) -> Dict[str, float]:

@@ -4,6 +4,9 @@ import numpy as np
 
 from src.jet_mechanism_diagnostics import (
     angular_momentum_inertial_stability,
+    centered_tendency,
+    moving_block_bootstrap_lead_lag,
+    sustained_sign_transitions,
     cylindrical_wind,
     lead_lag_correlation,
     match_by_intensity,
@@ -56,6 +59,29 @@ class JetMechanismDiagnosticsTests(unittest.TestCase):
         response = np.r_[np.nan, predictor[:-1]]
         result = lead_lag_correlation(predictor, response, 1.0, [0.0, 1.0])
         self.assertAlmostEqual(result["correlation"][1], 1.0)
+
+
+    def test_centered_pressure_intensification_rate(self):
+        time = np.arange(0.0, 13.0)
+        pressure = 1000.0 - 2.0 * time
+        rate = centered_tendency(time, pressure, 6.0, stronger_is_larger=False)
+        np.testing.assert_allclose(rate[3:-3], 2.0)
+        self.assertTrue(np.all(np.isnan(rate[:3])))
+
+    def test_sustained_transition_filters_one_sample_flip(self):
+        time = np.arange(8.0)
+        values = np.array([1, 1, -1, 1, 1, -1, -1, -1], float)
+        transitions = sustained_sign_transitions(time, values, minimum_duration_h=2.0)
+        np.testing.assert_allclose(transitions, [5.0])
+
+    def test_block_bootstrap_lead_lag_returns_interval(self):
+        predictor = np.sin(np.arange(40.0) / 4.0)
+        response = np.r_[np.nan, predictor[:-1]]
+        result = moving_block_bootstrap_lead_lag(
+            predictor, response, 1.0, [1.0], block_h=4.0, samples=50, seed=4
+        )
+        self.assertEqual(result["ci_low"].shape, (1,))
+        self.assertLessEqual(result["ci_low"][0], result["ci_high"][0])
 
 
 if __name__ == "__main__":

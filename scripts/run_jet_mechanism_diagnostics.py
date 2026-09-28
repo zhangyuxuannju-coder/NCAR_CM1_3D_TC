@@ -34,7 +34,9 @@ if str(ROOT) not in sys.path:
 from src.coordinates import destagger_to_scalar_grid, get_time_slice
 from src.environmental_eddy import diagnose_eddy_momentum_forcing
 from src.isentropic_energetics import (
+    assess_cycle_closure,
     build_isentropic_streamfunction,
+    classify_outflow_work_hypothesis,
     equivalent_potential_temperature,
     extract_closed_streamfunction_contour,
     integrate_thermodynamic_cycle,
@@ -49,6 +51,7 @@ from src.jet_mechanism_diagnostics import (
     RD,
     angular_momentum_inertial_stability,
     bulk_vertical_wind_shear,
+    centered_tendency,
     cylindrical_wind,
     identify_intensification_phases,
     interpolate_to_pressure,
@@ -56,10 +59,12 @@ from src.jet_mechanism_diagnostics import (
     lead_lag_correlation,
     match_by_intensity,
     mass_flux_weighted_mean,
+    moving_block_bootstrap_lead_lag,
     radial_bin_indices,
     radial_mean,
     safe_gradient,
     storm_relative_geometry,
+    sustained_sign_transitions,
     ventilation_index,
 )
 
@@ -85,6 +90,8 @@ class CaseTimeDiagnostics:
     pmin_hpa: float
     vmax_ms: float
     rmw_km: float
+    r34_km: float
+    r50_km: float
     potential_intensity_ms: float
     vws_200_800_ms: float
     vws_500_1000_ms: float
@@ -102,6 +109,8 @@ class CaseTimeDiagnostics:
     eyewall_updraft_kg_s: float
     outflow_mass_flux_kg_s: float
     outflow_i2_massflux_weighted_s2: float
+    outflow_i2_negative_area_fraction: float
+    outflow_i2_negative_massflux_fraction: float
     convective_top_km: float
     sink_temperature_k: float
     eddy_forcing_jet_box_rms_ms2: float
@@ -111,12 +120,13 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Separate shear, BL-I2, energetics and eddy/SE jet pathways")
     p.add_argument("--ctrl", default="/data/zhangyx/DATA/cm1out_25N_nojet.nc")
     p.add_argument("--jet", default="/data/zhangyx/DATA/cm1out_25N_9o_jet_30.nc")
-    p.add_argument("--output", default="output/jet_mechanism_25N_ctrl_vs_jet30_9deg")
+    p.add_argument("--output", default="output/jet_causal_attribution_25N_ctrl_vs_jet30_9deg_30_163h")
     p.add_argument("--start-hour", type=float, default=30.0)
-    p.add_argument("--end-hour", type=float, default=84.0)
-    p.add_argument("--step-hour", type=float, default=2.0)
-    p.add_argument("--energy-times", default="40,55,70,80")
+    p.add_argument("--end-hour", type=float, default=163.0)
+    p.add_argument("--step-hour", type=float, default=1.0)
+    p.add_argument("--energy-times", default="50,70,85,115,145")
     p.add_argument("--se-time", type=float, default=70.0)
+    p.add_argument("--se-times", default="50,70,85,115,145")
     p.add_argument("--f", type=float, default=6.2e-5)
     p.add_argument("--dr-km", type=float, default=5.0)
     p.add_argument("--max-r-km", type=float, default=1200.0)
@@ -128,12 +138,21 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--thetae-bin-k", type=float, default=1.0)
     p.add_argument("--isentropic-contour-fraction", type=float, default=0.5)
     p.add_argument("--regularization", default="1e-5,1e-4,1e-3")
+    p.add_argument("--stage-boundaries", default="30,70,100,163")
+    p.add_argument("--stage-boundary-sensitivity-h", type=float, default=6.0)
+    p.add_argument("--bootstrap-block-h", type=float, default=6.0)
+    p.add_argument("--bootstrap-samples", type=int, default=1000)
+    p.add_argument("--se-normalized-residual", type=float, default=1e-6)
+    p.add_argument("--se-sor-max-iter", type=int, default=2000)
+    p.add_argument("--se-cross-solver-tolerance", type=float, default=0.20)
     p.add_argument("--preflight-only", action="store_true")
     p.add_argument("--postprocess-only", action="store_true",
                    help="Rebuild matching/lag figures and report from existing reduced products")
     p.add_argument("--skip-se", action="store_true")
     p.add_argument("--skip-energy", action="store_true")
     p.add_argument("--resume", action="store_true", help="Reuse per-time NPZ products when present")
+    p.add_argument("--cases", default="CTRL,JET", help="Comma-separated subset used for resumable workers")
+    p.add_argument("--defer-postprocess", action="store_true", help="Write reduced case products only")
     return p
 
 
@@ -322,6 +341,10 @@ def _diagnose_time(ds: xr.Dataset, index: int, case: str, args, per_time_dir: Pa
     vmax = float(np.nanmax(vt_zr[lowest, core]))
     rmw_index = np.where(core)[0][int(np.nanargmax(vt_zr[lowest, core]))]
     rmw_km = float(r_km[rmw_index])
+    gale = np.where(vt_zr[lowest] >= 17.5)[0]
+    storm = np.where(vt_zr[lowest] >= 25.7)[0]
+    r34_km = float(r_km[gale[-1]]) if gale.size else np.nan
+    r50_km = float(r_km[storm[-1]]) if storm.size else np.nan
 
     pressure_levels = {}
     for lev in (85000.0, 60000.0, 50000.0, 20000.0):
@@ -416,6 +439,21 @@ def _diagnose_time(ds: xr.Dataset, index: int, case: str, args, per_time_dir: Pa
         i2["I2"], rho_zr, ur_zr, r_m, z_m,
         (200000.0, 1200000.0), (10000.0, 17000.0), positive_velocity=True,
     )
+    out_box = ((r_km[None, :] >= 200.0) & (r_km[None, :] <= 1200.0)
+               & (z_m[:, None] >= 10000.0) & (z_m[:, None] <= 17000.0))
+    out_valid = out_box & np.isfinite(i2["I2"])
+    out_i2_negative_area = (
+        float(np.count_nonzero(out_valid & (i2["I2"] < 0.0)) / np.count_nonzero(out_valid))
+        if np.count_nonzero(out_valid) else np.nan
+    )
+    out_transport_weight = np.where(
+        out_valid, rho_zr * r_m[None, :] * np.maximum(ur_zr, 0.0), 0.0
+    )
+    out_transport_total = float(np.sum(out_transport_weight))
+    out_i2_negative_transport = (
+        float(np.sum(out_transport_weight[i2["I2"] < 0.0]) / out_transport_total)
+        if out_transport_total > 0.0 else np.nan
+    )
     updraft_profile = np.nanmax(np.where(r_km[None, :] <= 200.0, w_zr, np.nan), axis=1)
     active = np.where(updraft_profile >= 1.0)[0]
     conv_top = float(z_m[active[-1]] / 1000.0) if active.size else np.nan
@@ -438,7 +476,7 @@ def _diagnose_time(ds: xr.Dataset, index: int, case: str, args, per_time_dir: Pa
     time_h = float(_time_seconds(ds)[index] / 3600.0)
     row = CaseTimeDiagnostics(
         case=case, time_h=time_h, center_x_km=center_x / 1000.0, center_y_km=center_y / 1000.0,
-        pmin_hpa=pmin, vmax_ms=vmax, rmw_km=rmw_km, potential_intensity_ms=pi_ms,
+        pmin_hpa=pmin, vmax_ms=vmax, rmw_km=rmw_km, r34_km=r34_km, r50_km=r50_km, potential_intensity_ms=pi_ms,
         vws_200_800_ms=shear_a["magnitude"], vws_500_1000_ms=shear_b["magnitude"],
         entropy_deficit_600_jkgk=entropy_deficit, normalized_entropy_deficit=chi,
         ventilation_index_200_800=ventilation_index(shear_a["magnitude"], chi, pi_ms),
@@ -448,6 +486,8 @@ def _diagnose_time(ds: xr.Dataset, index: int, case: str, args, per_time_dir: Pa
         wavenumber1_w_ms=wave1, bl_i2_inflow_weighted_s2=bl_i2, bl_inflow_ms=bl_inflow,
         bl_mass_convergence_kg_s=bl_conv, eyewall_updraft_kg_s=eyewall_flux,
         outflow_mass_flux_kg_s=outflow_flux, outflow_i2_massflux_weighted_s2=out_i2,
+        outflow_i2_negative_area_fraction=out_i2_negative_area,
+        outflow_i2_negative_massflux_fraction=out_i2_negative_transport,
         convective_top_km=conv_top, sink_temperature_k=sink_temp,
         eddy_forcing_jet_box_rms_ms2=jet_box_rms,
     )
@@ -456,11 +496,15 @@ def _diagnose_time(ds: xr.Dataset, index: int, case: str, args, per_time_dir: Pa
         "w_zr": w_zr, "rho_zr": rho_zr, "theta_zr": theta_zr,
         "pressure_zr": pressure_zr, "M": i2["M"], "dM_dr": i2["dM_dr"],
         "I2": i2["I2"], "zeta_absolute": i2["zeta_absolute"],
+        "velocity_factor": i2["velocity_factor"],
         "F_lambda_eddy": eddy["F_lambda_eddy"],
         "F_lambda_eddy_radial": eddy["F_lambda_eddy_radial"],
         "F_lambda_eddy_vertical": eddy["F_lambda_eddy_vertical"],
     }
     np.savez_compressed(per_time_dir / f"{case}_{time_h:06.1f}h.npz", **reduced)
+    (per_time_dir / f"{case}_{time_h:06.1f}h.json").write_text(
+        json.dumps(asdict(row), indent=2, ensure_ascii=False), encoding="utf-8"
+    )
     return row, {
         **reduced, "theta_e": theta_e, "temperature": temp, "pressure": pressure,
         "qv": qv, "rho": rho, "w": w, "radius": radius,
@@ -510,6 +554,10 @@ def _run_energy(case: str, time_h: float, state: Mapping[str, np.ndarray], args,
         )
         serializable.update({k: v for k, v in energetics.items() if k != "segment_labels"})
         serializable["cycle_available"] = True
+        serializable.update(assess_cycle_closure(
+            {**serializable, "mass_closure_ratio": product["mass_closure_ratio"]},
+            mass_threshold=0.10, first_law_threshold=0.15,
+        ))
         serializable["cycle_level_kg_s"] = float(cycle["level_kg_s"])
         np.savez_compressed(
             out_dir / f"isentropic_{case}_{time_h:06.1f}h.npz",
@@ -579,6 +627,154 @@ def _plot_timeseries(rows: Sequence[CaseTimeDiagnostics], out_dir: Path) -> None
     plt.close(fig)
 
 
+
+def _write_stage_products(
+    rows: Sequence[CaseTimeDiagnostics], args, out_dir: Path
+) -> Dict[str, object]:
+    """Write hourly tendencies, fixed-stage composites and boundary sensitivity."""
+    ctrl = [r for r in rows if r.case == "CTRL"]
+    jet = [r for r in rows if r.case == "JET"]
+    if len(ctrl) != len(jet):
+        raise ValueError("CTRL and JET reduced time series are not aligned")
+    t = np.array([r.time_h for r in ctrl], float)
+    if not np.allclose(t, [r.time_h for r in jet]):
+        raise ValueError("CTRL and JET times differ")
+    pc = np.array([r.pmin_hpa for r in ctrl]); pj = np.array([r.pmin_hpa for r in jet])
+    vc = np.array([r.vmax_ms for r in ctrl]); vj = np.array([r.vmax_ms for r in jet])
+    derived = {
+        "ctrl_pmin_rate_6h": centered_tendency(t, pc, 6.0, False),
+        "jet_pmin_rate_6h": centered_tendency(t, pj, 6.0, False),
+        "ctrl_pmin_rate_12h": centered_tendency(t, pc, 12.0, False),
+        "jet_pmin_rate_12h": centered_tendency(t, pj, 12.0, False),
+        "ctrl_vmax_rate_6h": centered_tendency(t, vc, 6.0, True),
+        "jet_vmax_rate_6h": centered_tendency(t, vj, 6.0, True),
+        "ctrl_vmax_rate_12h": centered_tendency(t, vc, 12.0, True),
+        "jet_vmax_rate_12h": centered_tendency(t, vj, 12.0, True),
+    }
+    derived["delta_pmin_rate_6h"] = derived["jet_pmin_rate_6h"] - derived["ctrl_pmin_rate_6h"]
+    derived["delta_vmax_rate_6h"] = derived["jet_vmax_rate_6h"] - derived["ctrl_vmax_rate_6h"]
+    with (out_dir / "intensity_tendencies.csv").open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        names = list(derived)
+        writer.writerow(["time_h", *names])
+        for i, ti in enumerate(t):
+            writer.writerow([ti, *[derived[name][i] for name in names]])
+    boundaries = np.array([float(x) for x in args.stage_boundaries.split(",")], float)
+    if boundaries.size != 4 or np.any(np.diff(boundaries) <= 0):
+        raise ValueError("--stage-boundaries needs four increasing hours")
+    metric_names = [
+        "pmin_hpa", "vmax_ms", "rmw_km", "r34_km", "r50_km",
+        "vws_200_800_ms", "vws_500_1000_ms", "ventilation_index_200_800",
+        "inward_entropy_deficit_covariance", "tilt_850_200_km", "wavenumber1_w_ms",
+        "bl_i2_inflow_weighted_s2", "bl_inflow_ms", "bl_mass_convergence_kg_s",
+        "eyewall_updraft_kg_s", "outflow_mass_flux_kg_s",
+        "outflow_i2_massflux_weighted_s2", "outflow_i2_negative_area_fraction",
+        "outflow_i2_negative_massflux_fraction", "convective_top_km",
+        "sink_temperature_k", "eddy_forcing_jet_box_rms_ms2",
+    ]
+    labels = ("intensification", "transition", "mature_suppressed")
+    summaries = []
+    sensitivity = {}
+    for shift in (-args.stage_boundary_sensitivity_h, 0.0, args.stage_boundary_sensitivity_h):
+        use_bounds = boundaries.copy()
+        use_bounds[1:3] += shift
+        key = f"interior_shift_{shift:+g}h"
+        sensitivity[key] = use_bounds.tolist()
+        for stage_name, lo, hi in zip(labels, use_bounds[:-1], use_bounds[1:]):
+            mask = (t >= lo) & (t < hi if hi < use_bounds[-1] else t <= hi)
+            if not np.any(mask):
+                continue
+            for name in metric_names:
+                c = np.array([getattr(r, name) for r in ctrl], float)
+                j = np.array([getattr(r, name) for r in jet], float)
+                summaries.append({
+                    "boundary_sensitivity": key, "stage": stage_name, "start_h": lo, "end_h": hi,
+                    "metric": name, "ctrl_mean": float(np.nanmean(c[mask])),
+                    "jet_mean": float(np.nanmean(j[mask])),
+                    "jet_minus_ctrl": float(np.nanmean(j[mask] - c[mask])),
+                    "sample_count": int(np.count_nonzero(mask)),
+                })
+    with (out_dir / "stage_summary.csv").open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(summaries[0]))
+        writer.writeheader(); writer.writerows(summaries)
+    transitions = sustained_sign_transitions(t, derived["delta_pmin_rate_6h"], 4.0)
+    phase_info = {
+        "fixed_boundaries_h": boundaries.tolist(),
+        "boundary_sensitivity": sensitivity,
+        "data_driven_delta_intensification_sign_transitions_h": transitions.tolist(),
+        "definition": "JET-minus-CTRL centered 6-h pressure intensification rate; new sign persists >=4 h",
+    }
+    (out_dir / "phase_boundaries.json").write_text(
+        json.dumps(phase_info, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+    fig, axes = plt.subplots(2, 1, figsize=(12, 8), sharex=True, constrained_layout=True)
+    axes[0].plot(t, pc, color="black", label="CTRL")
+    axes[0].plot(t, pj, color="tab:red", label="JET")
+    axes[0].invert_yaxis(); axes[0].set_ylabel("Minimum pressure (hPa)"); axes[0].legend()
+    axes[1].plot(t, derived["ctrl_pmin_rate_6h"], color="black", label="CTRL")
+    axes[1].plot(t, derived["jet_pmin_rate_6h"], color="tab:red", label="JET")
+    axes[1].plot(t, derived["delta_pmin_rate_6h"], color="tab:blue", label="JET-CTRL")
+    axes[1].axhline(0.0, color="0.3", lw=0.8)
+    axes[1].set(xlabel="Time (h)", ylabel="6-h pressure intensification (hPa h$^{-1}$)")
+    for ax in axes:
+        for bound in boundaries[1:-1]:
+            ax.axvline(bound, color="0.4", ls="--", lw=0.9)
+        ax.grid(alpha=0.25)
+    axes[1].legend(ncol=3)
+    fig.savefig(out_dir / "figures" / "intensity_stage_evolution.png", dpi=220)
+    fig.savefig(out_dir / "figures" / "intensity_stage_evolution.pdf")
+    plt.close(fig)
+    return {"time_h": t, **derived, **phase_info}
+
+
+def _plot_stage_composites(rows: Sequence[CaseTimeDiagnostics], args, out_dir: Path) -> None:
+    """Composite reduced r-z response fields for the three fixed stages."""
+    boundaries = np.array([float(x) for x in args.stage_boundaries.split(",")], float)
+    labels = ("intensification", "transition", "mature_suppressed")
+    fields = (
+        ("I2", r"$\Delta I^2$"),
+        ("dM_dr", r"$\Delta(\partial M/\partial r)$"),
+        ("ur_zr", r"$\Delta u_r$"),
+        ("w_zr", r"$\Delta w$"),
+        ("F_lambda_eddy", r"$F_{\lambda,env}$"),
+    )
+    data_dir = out_dir / "data"
+    products = out_dir / "products"; products.mkdir(exist_ok=True)
+    ctrl = {r.time_h: r for r in rows if r.case == "CTRL"}
+    jet = {r.time_h: r for r in rows if r.case == "JET"}
+    common = np.array(sorted(set(ctrl) & set(jet)), float)
+    payload = {}
+    fig, axes = plt.subplots(3, len(fields), figsize=(21, 11), constrained_layout=True, sharex=True, sharey=True)
+    for row_index, (label, lo, hi) in enumerate(zip(labels, boundaries[:-1], boundaries[1:])):
+        times = common[(common >= lo) & (common < hi if hi < boundaries[-1] else common <= hi)]
+        if not times.size:
+            continue
+        first = np.load(data_dir / f"CTRL_{times[0]:06.1f}h.npz")
+        r_km = np.asarray(first["r_km"]); z_km = np.asarray(first["z_km"])
+        rr, zz = np.meshgrid(r_km, z_km)
+        for col, (field, title) in enumerate(fields):
+            differences = []
+            for time_h in times:
+                with np.load(data_dir / f"CTRL_{time_h:06.1f}h.npz") as c, np.load(data_dir / f"JET_{time_h:06.1f}h.npz") as j:
+                    delta = np.asarray(j[field] - c[field], float)
+                    if field == "F_lambda_eddy":
+                        delta[:, r_km < 200.0] = 0.0
+                    differences.append(delta)
+            composite = np.nanmean(differences, axis=0)
+            payload[f"{label}_{field}"] = composite
+            ax = axes[row_index, col]
+            vmax = max(float(np.nanpercentile(np.abs(composite), 99.0)), 1.0e-20)
+            image = ax.contourf(rr, zz, composite, levels=np.linspace(-vmax, vmax, 25), cmap="RdBu_r", extend="both")
+            if row_index == 0: ax.set_title(title)
+            if col == 0: ax.set_ylabel(f"{label}\nHeight (km)")
+            if row_index == 2: ax.set_xlabel("Radius (km)")
+            fig.colorbar(image, ax=ax, pad=0.01)
+    payload["r_km"] = r_km; payload["z_km"] = z_km; payload["stage_boundaries_h"] = boundaries
+    np.savez_compressed(products / "stage_rz_composites.npz", **payload)
+    fig.savefig(out_dir / "figures" / "stage_rz_composites.png", dpi=220)
+    fig.savefig(out_dir / "figures" / "stage_rz_composites.pdf")
+    plt.close(fig)
+
 def _plot_70h(ctrl_file: Path, jet_file: Path, out_dir: Path) -> None:
     c, j = np.load(ctrl_file), np.load(jet_file)
     r, z = c["r_km"], c["z_km"]
@@ -600,18 +796,52 @@ def _plot_70h(ctrl_file: Path, jet_file: Path, out_dir: Path) -> None:
     plt.close(fig)
 
 
+
+def _normalized_se_residual(
+    operator: Mapping[str, np.ndarray], forcing_zr: np.ndarray,
+    psi_rzp2: np.ndarray, dr: float, dz: float,
+) -> float:
+    """L2 residual over interior radii using the formal SOR discretization."""
+    coef = {key: np.asarray(operator[key], float).T for key in ("A", "B", "C", "D", "E")}
+    force = np.asarray(forcing_zr, float).T
+    p = np.asarray(psi_rzp2, float)
+    nr, nz = force.shape
+    residuals = []
+    references = []
+    for i in range(1, nr - 1):
+        js = slice(2, nz)
+        jj = slice(1, nz - 1)
+        ip1, im1 = i + 1, i - 1
+        pxx = (p[ip1, js] + p[im1, js] - 2.0 * p[i, js]) / dr**2
+        pxy = (p[ip1, 3:nz+1] - p[ip1, 1:nz-1] - p[im1, 3:nz+1] + p[im1, 1:nz-1]) / (4.0 * dr * dz)
+        pyy = (p[i, 3:nz+1] + p[i, 1:nz-1] - 2.0 * p[i, js]) / dz**2
+        px = (p[ip1, js] - p[im1, js]) / (2.0 * dr)
+        py = (p[i, 3:nz+1] - p[i, 1:nz-1]) / (2.0 * dz)
+        lhs = coef["A"][i, jj] * pxx + coef["B"][i, jj] * pxy + coef["C"][i, jj] * pyy + coef["D"][i, jj] * px + coef["E"][i, jj] * py
+        residuals.append(lhs - force[i, jj]); references.append(force[i, jj])
+    residual = np.concatenate(residuals)
+    reference = np.concatenate(references)
+    good = np.isfinite(residual) & np.isfinite(reference)
+    if not np.any(good):
+        return np.inf
+    return float(np.linalg.norm(residual[good]) / max(np.linalg.norm(reference[good]), 1.0e-30))
+
 def _se_factorial(args, out_dir: Path) -> None:
     """Run C0/CI/CF/JF; CI replaces only the generalized inertia part of K3."""
     out_dir.mkdir(parents=True, exist_ok=True)
     from src._se_pipeline_environmental import _solve_response
-    from src._se_pipeline_single import PipelineConfig, azimuthal_average_from_3d
+    from src._se_pipeline_single import (
+        PipelineConfig, _rho_ext_from_rho_zr, _to_solver_layout_zr_to_rz,
+        azimuthal_average_from_3d, psi_to_uw,
+    )
+    from src.se_equation import solve_se_sparse
     from src.se_bui import assemble_operator, build_basic_state, build_forcing, invert_balanced_theta, regularize_ellipticity
 
     base_cfg = PipelineConfig(
         input_file=args.ctrl, output_dir=str(out_dir), target_time_hours=args.se_time,
         max_r_km=args.max_r_km, dr_km=args.dr_km, max_z_km=20.0,
         coriolis_f=args.f, write_netcdf=False, write_ieee=False, plot_solution=False,
-        baroclinic_scale=1.0, sor_max_iter=60000, sor_tol=1e-14,
+        baroclinic_scale=1.0, sor_max_iter=args.se_sor_max_iter, sor_tol=1e-10,
     )
     ctrl = azimuthal_average_from_3d(base_cfg)
     jet_cfg = PipelineConfig(**{**base_cfg.__dict__, "input_file": args.jet})
@@ -628,6 +858,14 @@ def _se_factorial(args, out_dir: Path) -> None:
     forcing_c = build_forcing(basic_c, ctrl["Q"], ctrl["Fnu"], r_m, z_m)["forcing_total"]
     forcing_j_on_c = build_forcing(basic_c, jet["Q"], jet["Fnu"], r_m, z_m)["forcing_total"]
     forcing_j = build_forcing(basic_j, jet["Q"], jet["Fnu"], r_m, z_m)["forcing_total"]
+    f_env = np.asarray(jet["F_lambda_eddy"] - ctrl["F_lambda_eddy"], float)
+    f_env_radial = np.asarray(jet["F_lambda_eddy_radial"] - ctrl["F_lambda_eddy_radial"], float)
+    f_env_vertical = np.asarray(jet["F_lambda_eddy_vertical"] - ctrl["F_lambda_eddy_vertical"], float)
+    environment_mask = r_m[None, :] >= 200000.0
+    f_env = np.where(environment_mask, f_env, 0.0)
+    f_env_radial = np.where(environment_mask, f_env_radial, 0.0)
+    f_env_vertical = np.where(environment_mask, f_env_vertical, 0.0)
+    forcing_env = build_forcing(basic_c, np.zeros_like(f_env), f_env, r_m, z_m)["forcing_total"]
     summary = {}
     for eps in [float(x) for x in args.regularization.split(",") if x.strip()]:
         operators = {}
@@ -641,17 +879,58 @@ def _se_factorial(args, out_dir: Path) -> None:
             operators[name] = assemble_operator(basic, a, b, c, r_m, z_m)
             infos[name] = info
         solutions = {}
+        validation = {}
+        dr = float(np.mean(np.diff(r_m))); dz = float(np.mean(np.diff(z_m)))
         for name, operator, forcing, density in (
             ("C0", operators["C0"], forcing_c, ctrl["rho"]),
             ("CI", operators["CI"], forcing_c, ctrl["rho"]),
             ("CF", operators["C0"], forcing_j_on_c, ctrl["rho"]),
             ("JF", operators["JF"], forcing_j, jet["rho"]),
+            ("ENV", operators["C0"], forcing_env, ctrl["rho"]),
         ):
-            psi, use, wse = _solve_response(operator, forcing, density, r_m, z_m, base_cfg)
+            psi_sor, u_sor, w_sor = _solve_response(operator, forcing, density, r_m, z_m, base_cfg)
+            sor_residual = _normalized_se_residual(operator, forcing, psi_sor, dr, dz)
+            sparse_error = ""
+            try:
+                arrays = {key: _to_solver_layout_zr_to_rz(operator[key]) for key in ("A", "B", "C", "D", "E")}
+                psi_sparse = solve_se_sparse(
+                    A=arrays["A"], B=arrays["B"], C=arrays["C"], D=arrays["D"], E=arrays["E"],
+                    Fin=_to_solver_layout_zr_to_rz(forcing), dr=dr, dz=dz,
+                )
+                sparse_residual = _normalized_se_residual(operator, forcing, psi_sparse, dr, dz)
+                rho_ext = _rho_ext_from_rho_zr(density)
+                u_sparse, w_sparse = psi_to_uw(psi_sparse, rho_ext, r_m, dr, dz)
+                cross_difference = float(
+                    np.linalg.norm((psi_sor - psi_sparse)[:, 1:-1])
+                    / max(np.linalg.norm(psi_sparse[:, 1:-1]), 1.0e-30)
+                )
+            except Exception as exc:
+                psi_sparse = None; sparse_residual = np.inf; cross_difference = np.inf
+                sparse_error = f"{type(exc).__name__}: {exc}"
+            if psi_sparse is not None and sparse_residual <= sor_residual:
+                psi, use, wse, selected = psi_sparse, u_sparse, w_sparse, "sparse"
+            else:
+                psi, use, wse, selected = psi_sor, u_sor, w_sor, "sor"
+            selected_residual = min(sor_residual, sparse_residual)
+            accepted = bool(np.isfinite(selected_residual) and selected_residual <= args.se_normalized_residual)
+            cross_consistent = bool(np.isfinite(cross_difference) and cross_difference <= args.se_cross_solver_tolerance)
             solutions[name] = {"psi": psi, "U": use, "W": wse}
+            validation[name] = {
+                "sor_normalized_residual": sor_residual,
+                "sparse_normalized_residual": sparse_residual,
+                "cross_solver_relative_psi": cross_difference,
+                "selected_solver": selected,
+                "selected_normalized_residual": selected_residual,
+                "accepted": accepted,
+                "cross_solver_consistent": cross_consistent,
+                "mechanism_eligible": bool(accepted and cross_consistent),
+                "sparse_error": sparse_error,
+            }
         tag = f"eps{eps:.0e}".replace("-", "m")
         np.savez_compressed(
             out_dir / f"se_i2_only_factorial_{tag}.npz", r_km=ctrl["r_km"], z_km=ctrl["z_km"],
+            F_lambda_env=f_env, F_lambda_env_radial=f_env_radial,
+            F_lambda_env_vertical=f_env_vertical, forcing_env=forcing_env,
             **{f"{case}_{field}": value for case, fields in solutions.items() for field, value in fields.items()},
         )
         r_km = np.asarray(ctrl["r_km"], float)
@@ -679,7 +958,16 @@ def _se_factorial(args, out_dir: Path) -> None:
         fig.savefig(out_dir / f"se_i2_only_factorial_{tag}.png", dpi=210)
         fig.savefig(out_dir / f"se_i2_only_factorial_{tag}.pdf")
         plt.close(fig)
-        summary[str(eps)] = infos
+        summary[str(eps)] = {
+            "regularization": infos,
+            "solutions": validation,
+            "accepted_solution_count": int(sum(item["accepted"] for item in validation.values())),
+            "solution_count": len(validation),
+            "cross_solver_consistent_count": int(sum(item["cross_solver_consistent"] for item in validation.values())),
+            "mechanism_eligible_count": int(sum(item["mechanism_eligible"] for item in validation.values())),
+            "normalized_residual_threshold": args.se_normalized_residual,
+            "cross_solver_relative_tolerance": args.se_cross_solver_tolerance,
+        }
     (out_dir / "se_i2_only_factorial_summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
 
 
@@ -725,6 +1013,8 @@ def _plot_matching_and_lag(
     fig, ax = plt.subplots(figsize=(9, 5.5), constrained_layout=True)
     for name, result in lag_results.items():
         ax.plot(result["lead_h"], result["correlation"], marker="o", ms=3, label=name)
+        if "ci_low" in result:
+            ax.fill_between(result["lead_h"], result["ci_low"], result["ci_high"], alpha=0.10)
     ax.axhline(0.0, color="k", lw=0.8); ax.axvspan(6.0, 24.0, color="0.85", zorder=-2, label="required lead window")
     ax.set(xlabel="Predictor lead (h)", ylabel="correlation with JET-minus-CTRL intensification rate", title="Lead-lag screening"); ax.legend(ncol=2)
     fig.savefig(figures / "lead_lag.png", dpi=220); fig.savefig(figures / "lead_lag.pdf"); plt.close(fig)
@@ -750,61 +1040,95 @@ def _plot_matching_and_lag(
 def _write_report(rows: Sequence[CaseTimeDiagnostics], energy: Sequence[Mapping[str, object]], args, out_dir: Path) -> None:
     ctrl = [r for r in rows if r.case == "CTRL"]
     jet = [r for r in rows if r.case == "JET"]
-    t = np.array([r.time_h for r in ctrl])
-    p_c = np.array([r.pmin_hpa for r in ctrl]); p_j = np.array([r.pmin_hpa for r in jet])
-    rate_diff = -(safe_gradient(p_j, t, 0) - safe_gradient(p_c, t, 0))
-    leads = np.arange(0.0, 38.0, 2.0)
+    stage = _write_stage_products(rows, args, out_dir)
+    _plot_stage_composites(rows, args, out_dir)
+    t = np.asarray(stage["time_h"], float)
+    response = np.asarray(stage["delta_pmin_rate_6h"], float)
     predictors = {
-        "VWS": np.array([r.vws_200_800_ms for r in jet]) - np.array([r.vws_200_800_ms for r in ctrl]),
+        "VWS_200_800": np.array([r.vws_200_800_ms for r in jet]) - np.array([r.vws_200_800_ms for r in ctrl]),
         "ventilation": np.array([r.inward_entropy_deficit_covariance for r in jet]) - np.array([r.inward_entropy_deficit_covariance for r in ctrl]),
         "BL_I2": np.array([r.bl_i2_inflow_weighted_s2 for r in jet]) - np.array([r.bl_i2_inflow_weighted_s2 for r in ctrl]),
-        "eddy_forcing": np.array([r.eddy_forcing_jet_box_rms_ms2 for r in jet]) - np.array([r.eddy_forcing_jet_box_rms_ms2 for r in ctrl]),
+        "BL_inflow": np.array([r.bl_inflow_ms for r in jet]) - np.array([r.bl_inflow_ms for r in ctrl]),
+        "eyewall_updraft": np.array([r.eyewall_updraft_kg_s for r in jet]) - np.array([r.eyewall_updraft_kg_s for r in ctrl]),
+        "sink_temperature": np.array([r.sink_temperature_k for r in jet]) - np.array([r.sink_temperature_k for r in ctrl]),
+        "outflow_I2": np.array([r.outflow_i2_massflux_weighted_s2 for r in jet]) - np.array([r.outflow_i2_massflux_weighted_s2 for r in ctrl]),
+        "eddy_forcing_magnitude": np.array([r.eddy_forcing_jet_box_rms_ms2 for r in jet]) - np.array([r.eddy_forcing_jet_box_rms_ms2 for r in ctrl]),
     }
-    lag_results = {name: lead_lag_correlation(value, rate_diff, args.step_hour, leads) for name, value in predictors.items()}
+    leads = np.arange(0.0, 37.0, max(args.step_hour, 1.0))
+    lag_results = {
+        name: moving_block_bootstrap_lead_lag(
+            value, response, args.step_hour, leads,
+            block_h=args.bootstrap_block_h, samples=args.bootstrap_samples,
+        )
+        for name, value in predictors.items()
+    }
     with (out_dir / "lead_lag.csv").open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.writer(handle); writer.writerow(["predictor", "lead_h", "correlation", "count"])
+        writer = csv.writer(handle)
+        writer.writerow(["predictor", "lead_h", "correlation", "ci_low", "ci_high", "count"])
         for name, result in lag_results.items():
-            for lead, corr, count in zip(result["lead_h"], result["correlation"], result["count"]):
-                writer.writerow([name, lead, corr, count])
+            for values in zip(result["lead_h"], result["correlation"], result["ci_low"], result["ci_high"], result["count"]):
+                writer.writerow([name, *values])
     matching = _plot_matching_and_lag(ctrl, jet, lag_results, out_dir)
-    if t.size >= 5:
-        phases = {"CTRL": identify_intensification_phases(t, -p_c), "JET": identify_intensification_phases(t, -p_j)}
-    else:
-        phases = {"CTRL": {"status": "insufficient_samples"}, "JET": {"status": "insufficient_samples"}}
     energy_complete = [e for e in energy if e.get("cycle_available")]
-    energy_good = [e for e in energy_complete if float(e.get("mass_closure_ratio", 1)) <= 0.1 and float(e.get("first_law_relative_residual", 1)) <= 0.2]
-    lines = [
-        "# JET mechanism diagnostic report", "",
-        "## Interpretation contract", "",
-        "- Outflow-layer inertial stability is treated as a balanced dynamical coefficient, not an energetic resistance.",
-        "- F_lambda_env is JET minus CTRL total eddy response, not a pure imposed-jet flux.",
-        "- Two deterministic simulations support mechanism consistency but do not establish general causality.", "",
-        "## Automatically identified phases", "", "```json", json.dumps(phases, indent=2), "```", "",
-        "## Isentropic energetics quality", "",
-        f"- Closed cycles extracted: {len(energy_complete)}/{len(energy)}.",
-        f"- Cycles passing mass <= 0.10 and first-law <= 0.20 residual thresholds: {len(energy_good)}.",
-    ]
-    if not energy_good:
-        lines.append("- Full heat-engine attribution is withheld because no cycle passed both closure thresholds.")
+    energy_good = [e for e in energy_complete if e.get("closure_passed", False)]
+    fractions = [float(e.get("outflow_gross_work_fraction", np.nan)) for e in energy_good]
+    energy_class = classify_outflow_work_hypothesis(fractions, None, 0.05)
     window = (leads >= 6.0) & (leads <= 24.0)
     best = {}
     for name, result in lag_results.items():
-        loc = np.where(window)[0][int(np.nanargmax(np.abs(result["correlation"][window])))]
-        best[name] = (float(result["lead_h"][loc]), float(result["correlation"][loc]))
-    p_good = (matching["p_mismatch"] <= 1.0)
+        candidate = np.where(window & np.isfinite(result["correlation"]))[0]
+        if not candidate.size:
+            best[name] = {"lead_h": np.nan, "r": np.nan, "ci_low": np.nan, "ci_high": np.nan}
+            continue
+        loc = candidate[int(np.nanargmax(np.abs(result["correlation"][candidate])))]
+        best[name] = {key: float(result[key][loc]) for key in ("lead_h", "correlation", "ci_low", "ci_high")}
+        best[name]["r"] = best[name].pop("correlation")
+    p_good = matching["p_mismatch"] <= 1.0
     rmw_good = np.abs(np.array([ctrl[i].rmw_km for i in matching["p_index"]]) - np.array([r.rmw_km for r in jet])) <= 25.0
-    paired = p_good & rmw_good
-    log_text = (out_dir / "run_full.log").read_text(encoding="utf-8", errors="replace") if (out_dir / "run_full.log").exists() else ""
-    se_failed = log_text.count("SOR not converged")
-    lines += ["", "## Scientific assessment", "",
-              f"- **Supported negative pathway — shear/ventilation.** JET raises mean 200–800-km VWS by {np.mean(predictors['VWS']):.2f} m s-1. The strongest required-window relation is r={best['VWS'][1]:.2f} at a {best['VWS'][0]:.0f}-h lead; ventilation covariance gives r={best['ventilation'][1]:.2f} at {best['ventilation'][0]:.0f} h.",
-              f"- **Insufficient as a positive pathway — boundary-layer I2 chain.** Mean JET-minus-CTRL BL I2 is {np.mean(predictors['BL_I2']):.2e} s-2, but its strongest 6–24-h relation is r={best['BL_I2'][1]:.2f} at {best['BL_I2'][0]:.0f} h, opposite to a robust positive lead. Early-time inflow/updraft and lower sink temperature remain a stage-limited candidate, not a primary attribution.",
-              f"- **Rejected for complete energetic attribution in this run.** No isentropic cycle passed both closure gates; downstream/outflow work therefore cannot be used quantitatively to explain the JET enhancement.",
-              f"- **Insufficient as a positive pathway — eddy/SE response.** Eddy-forcing magnitude has r={best['eddy_forcing'][1]:.2f} at a {best['eddy_forcing'][0]:.0f}-h lead. {se_failed}/12 SE solves missed the strict SOR tolerance, so their fields are retained only as regularized balanced projections.",
-              f"- Strength matching retained {int(np.count_nonzero(paired))}/{len(jet)} pmin-matched samples with <=1 hPa intensity mismatch and <=25 km RMW mismatch.",
-              "- **Overall:** no JET-positive factor satisfies all four preregistered criteria. The early BL-inflow/eyewall/sink-temperature chain is the leading candidate, but evidence is presently insufficient; the shear/ventilation penalty is the only supported robust pathway."]
+    paired_count = int(np.count_nonzero(p_good & rmw_good))
+    shear = best["VWS_200_800"]
+    shear_status = "支持" if np.isfinite(shear["ci_high"]) and shear["ci_high"] < 0.0 else "证据不足"
+    early = (t >= 30.0) & (t < 70.0)
+    delta_i2 = predictors["BL_I2"]; delta_inflow = predictors["BL_inflow"]; delta_up = predictors["eyewall_updraft"]
+    bl_sign_chain = np.nanmean(delta_i2[early]) < 0.0 and np.nanmean(delta_inflow[early]) < 0.0 and np.nanmean(delta_up[early]) > 0.0
+    bl_ci = best["BL_I2"]
+    bl_status = "支持" if bl_sign_chain and np.isfinite(bl_ci["ci_low"]) and not (bl_ci["ci_low"] <= 0.0 <= bl_ci["ci_high"]) else ("否定" if np.nanmean(delta_i2[early]) > 0.0 and np.nanmean(delta_inflow[early]) >= 0.0 else "证据不足")
+    se_files = sorted((out_dir / "se").glob("**/se_i2_only_factorial_summary.json"))
+    accepted = total = mechanism_eligible = regularization_count = 0
+    for file in se_files:
+        summary = json.loads(file.read_text(encoding="utf-8"))
+        for item in summary.values():
+            accepted += int(item.get("accepted_solution_count", 0))
+            total += int(item.get("solution_count", 0))
+            mechanism_eligible += int(item.get("mechanism_eligible_count", 0))
+            regularization_count += 1
+    se_status = "支持" if total and accepted == total and mechanism_eligible == total and regularization_count >= 3 else "证据不足"
+    se_note = f"方程残差通过 {accepted}/{total}；跨求解器机制资格 {mechanism_eligible}/{total}；正则化样本 {regularization_count}。未全部通过时仅称正则化平衡投影。"
+    lines = [
+        "# CTRL-JET增强差异归因报告", "",
+        "## 解释约束", "",
+        "- 外流层惯性稳定度只作为平衡动力响应系数，不预设为显著能量汇。",
+        "- F_lambda_env = eddy(JET)-eddy(CTRL) 是jet-induced total eddy response，不是纯外部急流通量。",
+        "- 两个确定性试验只能检验机制一致性，不能单独证明普遍因果。", "",
+        "## 阶段与样本", "",
+        f"- 固定阶段：30-70、70-100、100-163 h；内部边界做 ±{args.stage_boundary_sensitivity_h:g} h 敏感性。",
+        f"- 数据驱动增强率变号时次：{stage['data_driven_delta_intensification_sign_transitions_h']}。",
+        f"- 最低气压+RMW匹配通过：{paired_count}/{len(jet)}。", "",
+        "## 能量学", "",
+        f"- 提取闭合轮廓：{len(energy_complete)}/{len(energy)}；通过质量10%和第一定律15%门槛：{len(energy_good)}。",
+        f"- 外流机械功分类：**{energy_class}**。未通过闭合门槛的轮廓只报告局部分支。", "",
+        "## 机制判定", "",
+        f"- **风切/通风负通道：{shear_status}。** VWS最强6-24 h关系 r={shear['r']:.2f}，lead={shear['lead_h']:.0f} h，95%区间[{shear['ci_low']:.2f}, {shear['ci_high']:.2f}]。",
+        f"- **Li边界层链条：{bl_status}。** 增强期平均ΔI2={np.nanmean(delta_i2[early]):.3e} s-2、Δ入流={np.nanmean(delta_inflow[early]):.3f} m s-1、Δ眼墙上升={np.nanmean(delta_up[early]):.3e} kg s-1。",
+        f"- **上层eddy/SE动力通道：{se_status}。** {se_note}",
+        "- 只有同时通过领先、强度/RMW匹配、预算符号、阶段/环带和SE正则化稳健性的正向候选，才进入主要机制结论。", "",
+        "## 机器可读产品", "",
+        "- intensity_tendencies.csv：6/12 h强度变化率。",
+        "- stage_summary.csv：固定阶段及±6 h边界敏感性。",
+        "- lead_lag.csv：移动块bootstrap相关与95%区间。",
+        "- phase_boundaries.json、strength_matching.npz和SE/能量闭合日志记录全部验收状态。",
+    ]
     (out_dir / "mechanism_report.md").write_text("\n".join(lines), encoding="utf-8")
-
 
 def main() -> None:
     args = build_parser().parse_args()
@@ -812,12 +1136,19 @@ def main() -> None:
     per_time = out_dir / "data"; per_time.mkdir(exist_ok=True)
     energy_dir = out_dir / "energetics"; energy_dir.mkdir(exist_ok=True)
     figures_dir = out_dir / "figures"; figures_dir.mkdir(exist_ok=True)
+    (out_dir / "products").mkdir(exist_ok=True)
+    (out_dir / "logs").mkdir(exist_ok=True)
     if args.postprocess_only:
         rows = _read_rows(out_dir / "timeseries.csv")
         _write_report(rows, _load_energy_results(energy_dir), args, out_dir)
         print(f"[OK] Postprocessed products written to {out_dir}")
         return
-    datasets = {"CTRL": xr.open_dataset(args.ctrl, decode_cf=False), "JET": xr.open_dataset(args.jet, decode_cf=False)}
+    requested_cases = [item.strip().upper() for item in args.cases.split(",") if item.strip()]
+    invalid_cases = sorted(set(requested_cases) - {"CTRL", "JET"})
+    if invalid_cases:
+        raise ValueError(f"unsupported --cases values: {invalid_cases}")
+    all_paths = {"CTRL": args.ctrl, "JET": args.jet}
+    datasets = {case: xr.open_dataset(all_paths[case], decode_cf=False) for case in requested_cases}
     try:
         preflight = {}
         common_end = np.inf
@@ -829,7 +1160,8 @@ def main() -> None:
             preflight[case] = inv
             common_end = min(common_end, inv["time_end_h"])
         preflight["common_end_h"] = common_end
-        (out_dir / "preflight.json").write_text(json.dumps(preflight, indent=2, ensure_ascii=False), encoding="utf-8")
+        preflight_name = "preflight.json" if not args.defer_postprocess else f"preflight_worker_{'_'.join(requested_cases)}.json"
+        (out_dir / preflight_name).write_text(json.dumps(preflight, indent=2, ensure_ascii=False), encoding="utf-8")
         if args.preflight_only:
             print(json.dumps(preflight, indent=2, ensure_ascii=False)); return
         end = min(args.end_hour, common_end)
@@ -841,19 +1173,64 @@ def main() -> None:
             times = _time_seconds(ds) / 3600.0
             for target in targets:
                 index = int(np.argmin(np.abs(times - target)))
+                actual_time = float(times[index])
+                row_file = per_time / f"{case}_{actual_time:06.1f}h.json"
+                energy_requested = (
+                    not args.skip_energy
+                    and np.any(np.isclose(target, energy_targets, atol=0.51 * args.step_hour))
+                )
+                energy_file = energy_dir / f"isentropic_{case}_{actual_time:06.1f}h.json"
+                if args.resume and row_file.exists() and (not energy_requested or energy_file.exists()):
+                    row = CaseTimeDiagnostics(**json.loads(row_file.read_text(encoding="utf-8")))
+                    rows.append(row)
+                    if energy_requested:
+                        energy_results.append(json.loads(energy_file.read_text(encoding="utf-8")))
+                    continue
                 row, state = _diagnose_time(ds, index, case, args, per_time)
                 rows.append(row)
-                if not args.skip_energy and np.any(np.isclose(target, energy_targets, atol=0.51 * args.step_hour)):
+                if energy_requested:
                     energy_results.append(_run_energy(case, row.time_h, state, args, energy_dir))
         rows.sort(key=lambda item: (item.case, item.time_h))
+        if args.defer_postprocess:
+            _write_rows(rows, out_dir / f"timeseries_worker_{'_'.join(requested_cases)}.csv")
+            print(f"[OK] Reduced worker products written for {requested_cases}")
+            return
+        if set(requested_cases) != {"CTRL", "JET"}:
+            raise ValueError("final postprocessing requires both CTRL and JET; use --defer-postprocess for subsets")
         _write_rows(rows, out_dir / "timeseries.csv")
         _plot_timeseries(rows, figures_dir)
+        _write_stage_products(rows, args, out_dir)
         c70 = min((p for p in per_time.glob("CTRL_*h.npz")), key=lambda p: abs(float(p.stem.split("_")[-1][:-1]) - args.se_time))
         j70 = min((p for p in per_time.glob("JET_*h.npz")), key=lambda p: abs(float(p.stem.split("_")[-1][:-1]) - args.se_time))
         _plot_70h(c70, j70, figures_dir)
         if not args.skip_se:
-            _se_factorial(args, out_dir / "se")
+            original_se_time = args.se_time
+            for se_time in [float(x) for x in args.se_times.split(",") if x.strip()]:
+                args.se_time = se_time
+                _se_factorial(args, out_dir / "se" / f"{se_time:06.1f}h")
+            args.se_time = original_se_time
         _write_report(rows, energy_results, args, out_dir)
+        manifest = {
+            "ctrl_input": args.ctrl, "jet_input": args.jet,
+            "requested_time_h": [args.start_hour, args.end_hour],
+            "actual_common_end_h": common_end, "step_h": args.step_hour,
+            "stage_boundaries_h": [float(x) for x in args.stage_boundaries.split(",")],
+            "stage_boundary_sensitivity_h": args.stage_boundary_sensitivity_h,
+            "environment_annuli_km": [[200, 800], [500, 1000]],
+            "eddy_environment_exclusion_radius_km": 200,
+            "outflow_box": {"radius_km": [200, 1200], "height_km": [10, 17]},
+            "energy_closure_thresholds": {"mass": 0.10, "first_law": 0.15},
+            "se_regularization": [float(x) for x in args.regularization.split(",") if x.strip()],
+            "se_normalized_residual_threshold": args.se_normalized_residual,
+            "interpretation_contract": {
+                "outflow_i2": "balanced dynamical coefficient, not assumed energetic sink",
+                "F_lambda_env": "jet-induced total eddy response",
+                "nonaccepted_se": "regularized balanced projection only",
+            },
+        }
+        (out_dir / "manifest.json").write_text(
+            json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
         print(f"[OK] Products written to {out_dir}")
     finally:
         for ds in datasets.values(): ds.close()

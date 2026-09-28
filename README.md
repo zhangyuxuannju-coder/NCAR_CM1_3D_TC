@@ -289,6 +289,18 @@ python scripts/run_budget_diagnostic.py \
 
 ## 5. 功能三：SE 方程次级环流诊断
 
+当前 Bui 稀疏求解路径的边界修正、验证结果和保留近似，见
+[SE 稀疏边界修正说明（2026-09-15）](docs/se_sparse_boundary_correction_20260915.md)。
+该修正针对 `solve_se_sparse`，不应套用到下述独立 SOR 路径；内部求解一致性
+与 SE 是否准确再现 CM1 实际环流是不同的验证目标。
+
+新计算先确认求解路径：`src/_se_pipeline_single.py:solve_se_sparse` 是旧的
+均匀步长稀疏路径，垂直方向仍用平均 `dz`；其轴线敏感性选项
+`inner_axis_dirichlet=True` 将首个存储径向节点的 `psi` 置零，外侧和顶部采用
+流函数导数零、底部采用零值虚点。`src/se_nonuniform.py:solve_flux_form_dirichlet`
+则使用实际非均匀 `r_m/z_m`，四个有限域边界均设 `psi=0`。两条路径的边界、
+数组顺序及缓存不可混用；每张新图都应记录求解器、网格、边界、正则化和离散残差。
+
 ### 5.1 单时刻诊断（标准模式）
 
 ```bash
@@ -903,6 +915,10 @@ S_baroclinic = -d_r(delta_B * u_CTRL) + d_z(delta_B * w_CTRL)
 
 惯性单项求解 `L_CTRL,regularized(psi_I)=S_inertial`。结果是正则化平衡投影，
 不是CM1真实非线性环流，也不能单独证明强度因果关系。
+上面的三个式子是固定 CTRL 质量度量时的系数型一阶分解，并非完整离散
+算子差。完整的领先阶等效强迫应以 `-(L_J-L_C) psi_CC` 为基准；
+`K1/K2/K3` 之外的密度度量与离散余项须单独保留。详见
+[算子强迫推导](docs/se_equivalent_operator_forcing_derivation.md)。
 
 ### 14.2 多时次惯性算子诊断
 
@@ -911,8 +927,10 @@ S_baroclinic = -d_r(delta_B * u_CTRL) + d_z(delta_B * w_CTRL)
 ~~~
 
 主要输出包括惯性强迫图、径向/垂直SE响应、各配对NPZ和 `summary.json`。
-`--mask-radius-km 100` 只屏蔽100 km内的右端强迫，求解域仍保持0–1200 km。
-设为0会重新引入内核强度差，只能作敏感性。
+上例的 `--mask-radius-km 100` 是历史来源区域敏感性：仅将 100 km 内的
+该项 RHS 在求解前置零，求解域仍是 0–1200 km。若要分析全半径强迫，
+改为 `--mask-radius-km 0` 并使用新输出目录；仅从 `r>=100 km` 选择绘图色标
+不改变 RHS，不能在图题中写成“100 km 内强迫置零”。
 
 正则化至少比较 `eps_ratio=1e-3,1e-4,1e-5,1e-6`。若响应幅度或符号随正则化
 改变，不得用该解做定量归因。
@@ -931,9 +949,29 @@ sbatch scripts/diagnose_ctrl_eyewall_cycle.sbatch
 
 ### 14.4 当前研究边界
 
-现有结果支持“惯性稳定度算子是JET–CTRL差异的优先机制假设”。下一步仍需：
+惯性稳定度单项响应是机制线索，尚不能据此认定算子主导强度差。下一步仍需：
 
 - 同传统热力、切向动量、静力和斜压强迫做统一尺度比较；
 - 检查SE响应与CM1实际环流和强度倾向的符号、空间投影及领先关系；
 - 进行时间平均、正则化和集合稳健性检验；
 - 用jet高度、距离、宽度和强度的CM1敏感性试验建立因果证据。
+
+### 14.5 完整算子比较与数值检查
+
+比较热力、动量和算子效应时，先在相同网格及边界下构造 `L_C/L_J` 与
+`b_C/b_J`，固定预先组装的 RHS 求解 `CC/CJ/JC/JJ` 四组合。完整算子响应与
+`K1/K2/K3` 系数分解须分别命名，记录交互项及线性化余项；热力、动量
+响应采用同一径向风色标，不能仅凭各自自动色标判断谁更强。图上的
+JET 实际径向风或 JET SE 径向风等值线须标明来源，不是分项闭合目标。
+
+新批次应使用未占用的输出目录，并在运行前检查数据身份和旧缓存的求解器、
+边界及网格。当前服务器环境可直接运行稀疏边界单元测试：
+
+```bash
+/data1/home/zhangyx/miniconda3/envs/cm1_tc/bin/python -m unittest -q \
+  tests.test_se_sparse_boundaries
+```
+
+`tests/test_se_nonuniform.py` 是函数式测试，可在具有 pytest 的环境中另行运行；
+服务器当前环境没有 pytest，不应把命令未能启动误报成测试通过。上述检查
+验证离散方程和边界，不证明 SE 能完整再现 CM1 或唯一解释强度变化。

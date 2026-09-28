@@ -200,16 +200,38 @@ $$
 
 ## 4. 总的一阶差分方程
 
-三个算子贡献之和为
+在连续表达式中、并将质量度量 $m=(\rho r)^{-1}$ 固定为 CTRL 时，三个系数贡献之和为
 
 $$
-\boxed{S_{\rm op}=S_A+S_I+S_B}.
+\boxed{S_{K}=S_A+S_I+S_B}.
 $$
+
+它是历史上使用的系数型等效强迫。对于 JET--CTRL 的完整离散算子，主定义应为
+
+$$
+\boxed{S_{\rm op,lead}=-(L_J-L_C)\psi_{CC}},
+$$
+
+其中 $L_C,L_J$ 是以各自正则化 $K_1,K_2,K_3$ 和各自 $m=(\rho r)^{-1}$ 在同一非均匀网格上组装的矩阵，$\psi_{CC}$ 是 CTRL 算子对指定 CTRL 参考 RHS 的解。于是
+
+$$
+S_{\rm op,lead}=S_K+R_{m,\rm disc},
+$$
+
+其中 $R_{m,\rm disc}$ 同时包含质量度量差和连续分项到离散通量算子的差异；它是严格重构余项，不能另行归因为某一种物理强迫。
+
+若不忽略二阶项，则精确关系为
+
+$$
+\boxed{L_C(\psi_{JC}-\psi_{CC})=-(L_J-L_C)\psi_{JC}}
+$$
+
+且精确 RHS 与一阶 RHS 的差为 $-(L_J-L_C)(\psi_{JC}-\psi_{CC})$。因此必须报告这一项或相应响应误差，而不能默认一阶展开适用。
 
 若同时考虑传统热力和动量强迫的 JET–CTRL 差异，则完整的一阶诊断写为
 
 $$
-\boxed{\mathcal L_{C,\mathrm{reg}}\delta\psi=\Delta F_{\rm thermal}+\Delta F_{\rm momentum}+S_A+S_I+S_B}.
+\boxed{\mathcal L_{C,\mathrm{reg}}\delta\psi=\Delta F_{\rm thermal}+\Delta F_{\rm momentum}+S_{\rm op,lead}}
 $$
 
 该表达把两类效应明确分开：
